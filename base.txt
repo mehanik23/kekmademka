@@ -1,281 +1,173 @@
 #!/bin/bash
 
-# Цвета
-R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; B='\033[0;34m'; C='\033[0;36m'; NC='\033[0m'
+# Цвета для вывода
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-# Логирование
-log() { echo -e "${G}[INFO] $1${NC}"; }
-err() { echo -e "${R}[ERROR] $1${NC}"; exit 1; }
-warn() { echo -e "${Y}[WARN] $1${NC}"; }
-info() { echo -e "${C}[SETUP] $1${NC}"; }
-
-# Проверка root
-[[ $EUID -ne 0 ]] && err "Запустите с правами root"
-
-# Получение интерфейсов
-get_interfaces() {
-    interfaces=($(ip link show | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2}' | sed 's/^ *//'))
-    [[ ${#interfaces[@]} -eq 0 ]] && err "Интерфейсы не найдены"
+# Функции для логирования
+log() {
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+}
+error() {
+    echo -e "${RED}[ERROR] $1${NC}"
+}
+warn() {
+    echo -e "${YELLOW}[WARNING] $1${NC}"
+}
+info() {
+    echo -e "${BLUE}[INFO] $1${NC}"
+}
+prompt() {
+    echo -e "${CYAN}[INPUT] $1${NC}"
 }
 
-# Настройка DHCP
-setup_dhcp() {
-    info "Настройка DHCP сервера..."
-    
-    # Установка пакета
-    log "Установка isc-dhcp-server..."
-    apt update >/dev/null 2>&1
-    DEBIAN_FRONTEND=noninteractive apt install -y isc-dhcp-server >/dev/null 2>&1
-    
-    # Выбор интерфейса
-    get_interfaces
-    echo -e "\n${B}Выберите интерфейс для DHCP:${NC}"
-    for i in "${!interfaces[@]}"; do
-        echo "  $((i+1))) ${interfaces[$i]}"
-    done
-    
-    while true; do
-        read -p "Выбор интерфейса: " choice
-        [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]] && break
-        warn "Неверный выбор"
-    done
-    iface=${interfaces[$((choice-1))]}
-    
-    # Параметры DHCP
-    read -p "Сеть (например 192.168.1.0): " network
-    read -p "Маска подсети (например 255.255.255.0): " netmask
-    read -p "Начальный IP диапазона: " range_start
-    read -p "Конечный IP диапазона: " range_end
-    read -p "Шлюз по умолчанию: " gateway
-    read -p "DNS сервер 1: " dns1
-    read -p "DNS сервер 2 (или Enter): " dns2
-    read -p "Время аренды (сек, по умолчанию 86400): " lease_time
-    lease_time=${lease_time:-86400}
-    
-    # Создание конфигурации
-    log "Создание конфигурации DHCP..."
-    cat > /etc/dhcp/dhcpd.conf << EOF
-# DHCP конфигурация
-default-lease-time $lease_time;
-max-lease-time $((lease_time * 2));
-authoritative;
-
-subnet $network netmask $netmask {
-    range $range_start $range_end;
-    option routers $gateway;
-    option domain-name-servers $dns1${dns2:+, $dns2};
-    option broadcast-address $(ipcalc -b $network/$netmask | cut -d= -f2);
-}
-EOF
-    
-    # Настройка интерфейса
-    echo "INTERFACESv4=\"$iface\"" > /etc/default/isc-dhcp-server
-    echo "INTERFACESv6=\"\"" >> /etc/default/isc-dhcp-server
-    
-    # Запуск сервиса
-    systemctl enable isc-dhcp-server >/dev/null 2>&1
-    systemctl restart isc-dhcp-server
-    
-    if systemctl is-active --quiet isc-dhcp-server; then
-        log "DHCP сервер успешно настроен на интерфейсе $iface"
-        log "Диапазон: $range_start - $range_end"
-    else
-        err "Ошибка запуска DHCP сервера. Проверьте настройки."
+# Проверка прав root
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        error "Этот скрипт должен быть запущен с правами root"
+        exit 1
     fi
-}
-
-# Удаление DHCP
-remove_dhcp() {
-    info "Удаление DHCP сервера..."
-    
-    # Остановка сервиса
-    systemctl stop isc-dhcp-server 2>/dev/null
-    systemctl disable isc-dhcp-server 2>/dev/null
-    
-    # Удаление пакета и конфигов
-    DEBIAN_FRONTEND=noninteractive apt remove --purge -y isc-dhcp-server >/dev/null 2>&1
-    rm -f /etc/dhcp/dhcpd.conf
-    rm -f /etc/default/isc-dhcp-server
-    rm -rf /var/lib/dhcp/*
-    
-    log "DHCP сервер полностью удален"
-}
-
-# Настройка DNS
-setup_dns() {
-    info "Настройка DNS сервера..."
-    
-    # Установка пакета
-    log "Установка bind9..."
-    apt update >/dev/null 2>&1
-    DEBIAN_FRONTEND=noninteractive apt install -y bind9 bind9utils bind9-doc >/dev/null 2>&1
-    
-    # Параметры DNS
-    read -p "Доменное имя (например example.com): " domain
-    read -p "IP сервера DNS: " dns_ip
-    read -p "Сеть для обратной зоны (например 192.168.1): " reverse_net
-    read -p "Форвардер DNS 1 (например 8.8.8.8): " forwarder1
-    read -p "Форвардер DNS 2 (или Enter): " forwarder2
-    
-    # Создание основной конфигурации
-    log "Создание конфигурации DNS..."
-    
-    # named.conf.options
-    cat > /etc/bind/named.conf.options << EOF
-options {
-    directory "/var/cache/bind";
-    
-    forwarders {
-        $forwarder1;
-        ${forwarder2:+$forwarder2;}
-    };
-    
-    dnssec-validation auto;
-    listen-on-v6 { any; };
-    listen-on { any; };
-    allow-query { any; };
-    recursion yes;
-};
-EOF
-    
-    # named.conf.local
-    cat > /etc/bind/named.conf.local << EOF
-zone "$domain" {
-    type master;
-    file "/etc/bind/db.$domain";
-};
-
-zone "$reverse_net.in-addr.arpa" {
-    type master;
-    file "/etc/bind/db.$(echo $reverse_net | tr '.' '_')";
-};
-EOF
-    
-    # Прямая зона
-    cat > /etc/bind/db.$domain << EOF
-\$TTL    604800
-@       IN      SOA     ns1.$domain. admin.$domain. (
-                        $(date +%Y%m%d)01         ; Serial
-                        604800         ; Refresh
-                        86400          ; Retry
-                        2419200        ; Expire
-                        604800 )       ; Negative Cache TTL
-
-@       IN      NS      ns1.$domain.
-ns1     IN      A       $dns_ip
-www     IN      A       $dns_ip
-@       IN      A       $dns_ip
-EOF
-    
-    # Обратная зона
-    reverse_octet=$(echo $dns_ip | cut -d. -f4)
-    cat > /etc/bind/db.$(echo $reverse_net | tr '.' '_') << EOF
-\$TTL    604800
-@       IN      SOA     ns1.$domain. admin.$domain. (
-                        $(date +%Y%m%d)01         ; Serial
-                        604800         ; Refresh
-                        86400          ; Retry
-                        2419200        ; Expire
-                        604800 )       ; Negative Cache TTL
-
-@       IN      NS      ns1.$domain.
-$reverse_octet     IN      PTR     ns1.$domain.
-EOF
-    
-    # Права доступа
-    chown bind:bind /etc/bind/db.*
-    chmod 644 /etc/bind/db.*
-    
-    # Проверка конфигурации
-    if named-checkconf; then
-        log "Конфигурация DNS корректна"
-    else
-        warn "Есть ошибки в конфигурации DNS"
-    fi
-    
-    # Запуск сервиса
-    systemctl enable bind9 >/dev/null 2>&1
-    systemctl restart bind9
-    
-    if systemctl is-active --quiet bind9; then
-        log "DNS сервер успешно настроен для домена: $domain"
-        log "IP сервера: $dns_ip"
-    else
-        err "Ошибка запуска DNS сервера. Проверьте настройки."
-    fi
-}
-
-# Удаление DNS
-remove_dns() {
-    info "Удаление DNS сервера..."
-    
-    # Остановка сервиса
-    systemctl stop bind9 2>/dev/null
-    systemctl disable bind9 2>/dev/null
-    
-    # Удаление пакета и конфигов
-    DEBIAN_FRONTEND=noninteractive apt remove --purge -y bind9 bind9utils bind9-doc >/dev/null 2>&1
-    rm -f /etc/bind/named.conf.local
-    rm -f /etc/bind/named.conf.options
-    rm -f /etc/bind/db.*
-    rm -rf /var/cache/bind/*
-    rm -rf /var/lib/bind/*
-    
-    log "DNS сервер полностью удален"
-}
-
-# Проверка статуса
-check_status() {
-    echo -e "\n${B}=== СТАТУС СЕРВИСОВ ===${NC}"
-    
-    # DHCP статус
-    if systemctl is-active --quiet isc-dhcp-server 2>/dev/null; then
-        echo -e "${G}✓ DHCP сервер: АКТИВЕН${NC}"
-        if [[ -f /etc/dhcp/dhcpd.conf ]]; then
-            echo "  Конфигурация: /etc/dhcp/dhcpd.conf"
-            grep -E "range|option routers" /etc/dhcp/dhcpd.conf | sed 's/^/  /'
-        fi
-    else
-        echo -e "${R}✗ DHCP сервер: НЕАКТИВЕН${NC}"
-    fi
-    
-    echo ""
-    
-    # DNS статус
-    if systemctl is-active --quiet bind9 2>/dev/null; then
-        echo -e "${G}✓ DNS сервер: АКТИВЕН${NC}"
-        if [[ -f /etc/bind/named.conf.local ]]; then
-            echo "  Зоны:"
-            grep -E "zone" /etc/bind/named.conf.local | sed 's/^/  /'
-        fi
-    else
-        echo -e "${R}✗ DNS сервер: НЕАКТИВЕН${NC}"
-    fi
-    
-    echo ""
-    echo -e "${B}Порты:${NC}"
-    ss -tuln | grep -E ":53|:67" | sed 's/^/  /' || echo "  Нет активных портов DHCP/DNS"
 }
 
 # Главное меню
-while true; do
-    echo -e "\n${G}=== НАСТРОЙКА DHCP И DNS ===${NC}"
-    echo "1) Настроить DHCP на устройстве"
-    echo "2) Удалить DHCP с устройства"
-    echo "3) Настроить DNS на устройстве"
-    echo "4) Удалить DNS с устройства"
-    echo "5) Проверить статус сервисов"
-    echo "6) Выход"
-    
-    read -p "Выбор: " choice
-    
-    case $choice in
-        1) setup_dhcp ;;
-        2) remove_dhcp ;;
-        3) setup_dns ;;
-        4) remove_dns ;;
-        5) check_status ;;
-        6) log "Выход из настройки"; break ;;
-        *) warn "Неверный выбор (1-6)" ;;
-    esac
-done
+main_menu() {
+    while true; do
+        echo ""
+        info "Главное меню:"
+        echo "1) Настройка DHCP-сервера"
+        echo "2) Удалить DHCP-сервер"
+        echo "3) Настройка DNS"
+        echo "4) Удалить DNS"
+        echo "5) Выход"
+        prompt "Выберите действие (1-5): "
+        read -r choice
+
+        case $choice in
+            1) configure_dhcp ;;
+            2) remove_dhcp ;;
+            3) configure_dns ;;
+            4) remove_dns ;;
+            5) break ;;
+            *) warn "Неверный выбор. Введите число от 1 до 5." ;;
+        esac
+    done
+}
+
+# Функция: настройка DHCP-сервера
+configure_dhcp() {
+    log "Проверка наличия isc-dhcp-server..."
+    if ! command -v dhcpd &>/dev/null; then
+        log "Установка isc-dhcp-server..."
+        apt update
+        apt install -y isc-dhcp-server
+    fi
+
+    # Получение интерфейса
+    get_interfaces
+    echo ""
+    info "Доступные сетевые интерфейсы:"
+    for i in "${!interfaces[@]}"; do
+        echo "  $((i+1))) ${interfaces[$i]}"
+    done
+
+    while true; do
+        prompt "Выберите интерфейс для работы DHCP (1-${#interfaces[@]}): "
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+            selected_interface=${interfaces[$((choice-1))]}
+            break
+        else
+            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
+        fi
+    done
+
+    # Запрос параметров
+    prompt "Введите IP-адрес подсети (например, 192.168.1.0/24): "
+    read -r subnet_ip
+
+    prompt "Введите начало диапазона выдачи IP (например, 192.168.1.100): "
+    read -r start_ip
+
+    prompt "Введите конец диапазона выдачи IP (например, 192.168.1.200): "
+    read -r end_ip
+
+    prompt "Введите шлюз по умолчанию (например, 192.168.1.1): "
+    read -r gateway
+
+    prompt "Введите DNS-сервер (например, 8.8.8.8): "
+    read -r dns_server
+
+    log "Настройка DHCP-сервера..."
+
+    cat > /etc/dhcp/dhcpd.conf <<EOF
+subnet $subnet_ip netmask $(ipcalc -n $subnet_ip | cut -d= -f2) {
+  range $start_ip $end_ip;
+  option routers $gateway;
+  option domain-name-servers $dns_server;
+  default-lease-time 600;
+  max-lease-time 7200;
+}
+EOF
+
+    echo "INTERFACES=\"$selected_interface\"" > /etc/default/isc-dhcp-server
+
+    systemctl restart isc-dhcp-server
+    systemctl enable isc-dhcp-server
+
+    log "DHCP-сервер настроен!"
+}
+
+# Функция: удаление DHCP-сервера
+remove_dhcp() {
+    log "Удаление DHCP-сервера..."
+    if ! command -v dhcpd &>/dev/null; then
+        warn "DHCP-сервер не установлен."
+        return
+    fi
+
+    systemctl stop isc-dhcp-server
+    systemctl disable isc-dhcp-server
+
+    rm -f /etc/dhcp/dhcpd.conf
+    rm -f /etc/default/isc-dhcp-server
+
+    apt purge -y isc-dhcp-server isc-dhcp-server-bin isc-dhcp-common
+    apt autoremove -y
+
+    log "DHCP-сервер удален!"
+}
+
+# Функция: настройка DNS
+configure_dns() {
+    prompt "Введите IP-адрес DNS-сервера: "
+    read -r dns_ip
+
+    log "Настройка DNS на устройстве..."
+    echo "nameserver $dns_ip" > /etc/resolv.conf
+
+    log "DNS настроен!"
+}
+
+# Функция: удаление DNS
+remove_dns() {
+    log "Удаление DNS настроек..."
+    echo "" > /etc/resolv.conf
+
+    log "DNS настройки удалены!"
+}
+
+# Функция: получить список интерфейсов
+get_interfaces() {
+    interfaces=($(ip link show | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2}' | sed 's/^ *//'))
+    if [[ ${#interfaces[@]} -eq 0 ]]; then
+        error "Не найдено сетевых интерфейсов"
+        exit 1
+    fi
+}
+
+# Главное меню
+main_menu
