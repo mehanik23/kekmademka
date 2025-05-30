@@ -11,17 +11,17 @@ echo "Отключение NetworkManager..."
 systemctl stop NetworkManager
 systemctl disable NetworkManager
 
-# Получение имени интерфейса
-interface=$(ip -o link | grep -v "lo" | awk '{print $2}' | cut -d':' -f1)
+# Указываем интерфейс ens4
+interface="ens4"
 
 # Запрос сетевых настроек
-read -p "Введите IP адрес: " ip
-read -p "Введите маску (CIDR): " mask
+read -p "Введите IP адрес для $interface: " ip
+read -p "Введите маску (CIDR, например, 24): " mask
 read -p "Введите шлюз: " gateway
 read -p "Введите DNS сервер: " dns
 
 # Применение настроек
-echo "Применение настроек..."
+echo "Применение настроек для интерфейса $interface..."
 ip addr flush dev $interface
 ip addr add ${ip}/${mask} dev $interface
 ip link set $interface up
@@ -29,7 +29,7 @@ ip route add default via $gateway
 echo "nameserver $dns" > /etc/resolv.conf
 
 # Проверка подключения
-echo "Проверка подключения..."
+echo "Проверка подключения через ping 8.8.8.8..."
 ping -c 3 8.8.8.8
 
 echo "Настройка завершена!"
