@@ -246,7 +246,7 @@ configure_masquerade() {
     done
 
     while true; do
-        prompt "Выберите внешний интерфейс для маскарадинга (1-${#interfaces[@]}): "
+        prompt "Интерфейс, который идёт не с этого устройства (1-${#interfaces[@]}): "
         read -r choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
             external_interface=${interfaces[$((choice-1))]}
@@ -257,7 +257,7 @@ configure_masquerade() {
     done
 
     while true; do
-        prompt "Выберите внутренний интерфейс для локальной сети (1-${#interfaces[@]}): "
+        prompt "Интерфейс, который идёт с этого устройства(1-${#interfaces[@]}): "
         read -r choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
             internal_interface=${interfaces[$((choice-1))]}
