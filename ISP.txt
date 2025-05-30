@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# 1. Отключение nmtui
+echo "Отключение NetworkManager (nmtui)..."
+sudo systemctl stop NetworkManager
+sudo systemctl disable NetworkManager
+echo "NetworkManager отключен."
+
+# 2. Запрос у пользователя данных для настройки IP
+read -p "Введите новый IP-адрес: " ip_address
+read -p "Введите маску сети (например, 24): " subnet_mask
+read -p "Введите шлюз по умолчанию: " gateway
+read -p "Введите DNS-сервер (например, 8.8.8.8): " dns_server
+
+# 3. Определяем сетевой интерфейс
+interface=$(ip route | grep default | awk '{print $5}')
+if [ -z "$interface" ]; then
+    echo "Не удалось определить сетевой интерфейс. Проверьте подключение."
+    exit 1
+fi
+
+echo "Настройка IP-адреса для интерфейса: $interface"
+
+# 4. Настраиваем IP-адрес
+sudo ip addr flush dev $interface # Очищаем текущие настройки IP
+sudo ip addr add ${ip_address}/${subnet_mask} dev $interface # Устанавливаем новый IP
+sudo ip link set $interface up # Поднимаем интерфейс
+
+# 5. Настраиваем шлюз
+sudo ip route add default via $gateway
+
+# 6. Настраиваем DNS
+echo "nameserver $dns_server" | sudo tee /etc/resolv.conf > /dev/null
+
+echo "Настройка завершена!"
+echo "Новый IP: $ip_address/$subnet_mask"
+echo "Шлюз: $gateway"
+echo "DNS: $dns_server"
