@@ -53,4 +53,62 @@ echo "nameserver $dns" > /etc/resolv.conf
 echo "Проверка подключения через ping 8.8.8.8..."
 ping -c 3 8.8.8.8
 
+
+
+
+
+#!/bin/bash
+
+# Проверка прав root
+if [[ $EUID -ne 0 ]]; then
+    echo "Этот скрипт должен быть запущен с правами root"
+    exit 1
+fi
+
+# Получение списка доступных интерфейсов
+echo "Доступные сетевые интерфейсы:"
+interfaces=($(ip link show | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2}' | sed 's/^ *//'))
+if [[ ${#interfaces[@]} -eq 0 ]]; then
+    echo "Ошибка: Нет доступных сетевых интерфейсов."
+    exit 1
+fi
+
+# Вывод списка интерфейсов для выбора
+for i in "${!interfaces[@]}"; do
+    echo "  $((i+1))) ${interfaces[$i]}"
+done
+
+# Запрос выбора интерфейса
+while true; do
+    read -p "Выберите номер интерфейса (1-${#interfaces[@]}): " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+        interface=${interfaces[$((choice-1))]}
+        break
+    else
+        echo "Неверный выбор. Пожалуйста, введите число от 1 до ${#interfaces[@]}."
+    fi
+done
+
+# Сброс настроек для выбранного интерфейса
+echo "Сброс настроек для интерфейса $interface..."
+ip addr flush dev $interface
+ip route flush dev $interface
+ip link set $interface down
+ip link set $interface up
+
+# Очистка DNS
+echo "Очистка DNS..."
+echo "" > /etc/resolv.conf
+
+# Включение NetworkManager
+echo "Включение NetworkManager..."
+systemctl enable NetworkManager
+systemctl start NetworkManager
+
+# Проверка подключения
+echo "Проверка подключения через ping 8.8.8.8..."
+ping -c 3 8.8.8.8 || echo "Подключение к интернету недоступно."
+
+echo "Настройки сети для интерфейса $interface сброшены!"
+
 echo "Настройка завершена!"
