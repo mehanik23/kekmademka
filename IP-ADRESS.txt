@@ -1,132 +1,224 @@
 #!/bin/bash
 
-# Цвета
-R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; B='\033[0;34m'; NC='\033[0m'
+# Цвета для вывода
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-# Логирование
-log() { echo -e "${B}[INFO] $1${NC}"; }
-err() { echo -e "${R}[ERROR] $1${NC}"; }
-warn() { echo -e "${Y}[WARN] $1${NC}"; }
+# Функции для логирования
+log() {
+    echo -e "${CYAN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+}
+error() {
+    echo -e "${RED}[ERROR] $1${NC}"
+}
+warn() {
+    echo -e "${YELLOW}[WARNING] $1${NC}"
+}
+info() {
+    echo -e "${BLUE}[INFO] $1${NC}"
+}
+prompt() {
+    echo -e "${YELLOW}[INPUT] $1${NC}"
+}
 
-# Проверка root
-[[ $EUID -ne 0 ]] && { err "Запустите с правами root"; exit 1; }
+# Проверка прав root
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        error "Этот скрипт должен быть запущен с правами root"
+        exit 1
+    fi
+}
 
 # Отключение NetworkManager
-disable_nm() {
+disable_networkmanager() {
     log "Отключение NetworkManager..."
-    systemctl stop NetworkManager 2>/dev/null
-    systemctl disable NetworkManager 2>/dev/null
-    systemctl mask NetworkManager 2>/dev/null
-    log "NetworkManager отключен"
+    systemctl stop NetworkManager
+    systemctl disable NetworkManager
+    systemctl mask NetworkManager
+    log "NetworkManager полностью отключен"
 }
 
-# Получение интерфейсов
+# Получение списка сетевых интерфейсов
 get_interfaces() {
     interfaces=($(ip link show | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2}' | sed 's/^ *//'))
-    [[ ${#interfaces[@]} -eq 0 ]] && { err "Интерфейсы не найдены"; exit 1; }
+    if [[ ${#interfaces[@]} -eq 0 ]]; then
+        error "Не найдено сетевых интерфейсов"
+        exit 1
+    fi
 }
 
-# Настройка IP
-setup_ip() {
+# Настройка статического IP
+configure_static_ip() {
     get_interfaces
-    echo -e "\n${B}Интерфейсы:${NC}"
+    echo ""
+    info "Доступные сетевые интерфейсы:"
     for i in "${!interfaces[@]}"; do
         echo "  $((i+1))) ${interfaces[$i]}"
     done
 
     while true; do
-        read -p "Выберите интерфейс (1-${#interfaces[@]}): " choice
-        [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]] && break
-        warn "Неверный выбор"
+        prompt "Выберите интерфейс для настройки (1-${#interfaces[@]}): "
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+            selected_interface=${interfaces[$((choice-1))]}
+            break
+        else
+            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
+        fi
     done
-    
-    iface=${interfaces[$((choice-1))]}
-    read -p "IP адрес: " ip
-    read -p "Маска (CIDR): " mask
-    read -p "Шлюз: " gw
-    read -p "DNS: " dns
 
-    log "Настройка $iface..."
-    ip addr flush dev $iface
-    ip addr add ${ip}/${mask} dev $iface
-    ip link set $iface up
-    ip route add default via $gw 2>/dev/null
+    read -p "Введите IP адрес: " ip
+    read -p "Введите маску (CIDR, например, 24): " mask
+    read -p "Введите шлюз: " gateway
+    read -p "Введите DNS сервер: " dns
+
+    log "Применение настроек для интерфейса $selected_interface..."
+    ip addr flush dev $selected_interface
+    ip addr add ${ip}/${mask} dev $selected_interface
+    ip link set $selected_interface up
+    ip route add default via $gateway
     echo "nameserver $dns" > /etc/resolv.conf
-    log "IP настроен!"
+    log "Настройка завершена!"
 }
 
-# Смена hostname
-change_host() {
-    hosts=("isp.au-team.irpo" "hq-rtr.au-team.irpo" "br-rtr.au-team.irpo" "hq-srv.au-team.irpo" "hq-cli.au-team.irpo" "br-srv.au-team.irpo")
-    echo -e "\n${B}Выберите hostname:${NC}"
-    for i in "${!hosts[@]}"; do
-        echo "  $((i+1))) ${hosts[$i]}"
+# Изменение имени хоста
+change_hostname() {
+    local hostnames=("isp.au-team.irpo" "hq-rtr.au-team.irpo" "br-rtr.au-team.irpo" "hq-srv.au-team.irpo" "hq-cli.au-team.irpo" "br-srv.au-team.irpo")
+    echo ""
+    info "Доступные варианты имени хоста:"
+    for i in "${!hostnames[@]}"; do
+        echo "  $((i+1))) ${hostnames[$i]}"
     done
-    echo "  $((${#hosts[@]}+1))) Ввести свой"
+    echo "  $((${#hostnames[@]}+1))) Ввести своё имя"
 
-    read -p "Выбор: " choice
-    if [[ "$choice" -le ${#hosts[@]} ]]; then
-        hostname=${hosts[$((choice-1))]}
-    else
-        read -p "Введите hostname: " hostname
-    fi
+    while true; do
+        prompt "Выберите вариант (1-$(( ${#hostnames[@]}+1 ))): "
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le $((${#hostnames[@]}+1)) ]]; then
+            if [[ "$choice" -le ${#hostnames[@]} ]]; then
+                new_hostname=${hostnames[$((choice-1))]}
+            else
+                read -p "Введите новое имя хоста: " new_hostname
+            fi
+            break
+        else
+            error "Неверный выбор. Введите число от 1 до $((${#hostnames[@]}+1))"
+        fi
+    done
 
-    hostnamectl set-hostname "$hostname"
-    log "Hostname: $hostname"
+    log "Установка нового имени хоста: $new_hostname"
+    hostnamectl set-hostname "$new_hostname"
     exec bash
+    log "Имя хоста изменено!"
 }
 
-# Маскарадинг
-setup_nat() {
+# Настройка маскарадинга
+configure_masquerade() {
     get_interfaces
-    echo -e "\n${B}Выберите внешний интерфейс:${NC}"
+    echo ""
+    info "Доступные сетевые интерфейсы:"
     for i in "${!interfaces[@]}"; do
         echo "  $((i+1))) ${interfaces[$i]}"
     done
 
-    read -p "Выбор: " choice
-    iface=${interfaces[$((choice-1))]}
+    while true; do
+        prompt "Выберите внешний интерфейс для маскарадинга (1-${#interfaces[@]}): "
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+            interface=${interfaces[$((choice-1))]}
+            break
+        else
+            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
+        fi
+    done
 
-    log "Настройка NAT..."
+    log "Настройка IP-форвардинга и маскарадинга..."
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    sysctl -p >/dev/null
-    iptables -t nat -A POSTROUTING -o $iface -j MASQUERADE
-    
-    if command -v apt >/dev/null; then
-        apt update >/dev/null 2>&1
-        DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent >/dev/null 2>&1
-        netfilter-persistent save >/dev/null 2>&1
-    fi
-    log "NAT настроен!"
+    sysctl -p
+    iptables -t nat -A POSTROUTING -o $interface -j MASQUERADE
+    apt update
+    DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
+    netfilter-persistent save
+    log "Маскарадинг настроен!"
 }
 
-# Проверки
-check_net() {
-    echo -e "\n${B}1)${NC} IP адреса  ${B}2)${NC} Порты  ${B}3)${NC} Ping 8.8.8.8"
-    read -p "Выбор: " choice
-    case $choice in
-        1) ip -c a ;;
-        2) ss -tuln 2>/dev/null || netstat -tuln ;;
-        3) ping -c 3 8.8.8.8 ;;
-    esac
+# Проверка интернета
+test_internet_connection() {
+    log "Проверка подключения к интернету через ping 8.8.8.8..."
+    ping -c 3 8.8.8.8 || warn "Подключение к интернету недоступно."
+}
+
+# Проверка соединений
+check_connections_menu() {
+    while true; do
+        echo ""
+        info "Меню проверки соединений:"
+        echo "1) Показать IP адреса (ip -c a)"
+        echo "2) Показать открытые порты (ss -tuln)"
+        echo "3) Сканирование сети (nmap)"
+        echo "4) Вернуться в главное меню"
+        prompt "Выберите действие (1-4): "
+        read -r choice
+
+        case $choice in
+            1)
+                log "Текущая конфигурация IP адресов:"
+                ip -c a
+                ;;
+            2)
+                if ! command -v ss &>/dev/null; then
+                    log "Установка утилиты ss..."
+                    apt update
+                    apt install -y iproute2
+                fi
+                log "Открытые порты:"
+                ss -tuln
+                ;;
+            3)
+                if ! command -v nmap &>/dev/null; then
+                    log "Установка nmap..."
+                    apt update
+                    apt install -y nmap
+                fi
+                log "Сканирование сети (192.168.1.0/24):"
+                nmap -sn 192.168.1.0/24
+                ;;
+            4) break ;;
+            *) warn "Неверный выбор. Введите число от 1 до 4." ;;
+        esac
+    done
 }
 
 # Главное меню
-while true; do
-    echo -e "\n${G}=== Настройка сети ===${NC}"
-    echo "1) Настроить IP"
-    echo "2) Сменить hostname" 
-    echo "3) Настроить NAT"
-    echo "4) Проверки"
-    echo "5) Выход"
-    read -p "Выбор: " choice
+main_menu() {
+    while true; do
+        echo ""
+        info "Главное меню:"
+        echo "1) Настройка статического IP"
+        echo "2) Изменение имени хоста"
+        echo "3) Настройка маскарадинга"
+        echo "4) Проверка интернета"
+        echo "5) Проверка соединений"
+        echo "6) Выход"
+        prompt "Выберите действие (1-6): "
+        read -r choice
 
-    case $choice in
-        1) disable_nm; setup_ip ;;
-        2) change_host ;;
-        3) setup_nat ;;
-        4) check_net ;;
-        5) break ;;
-        *) warn "Неверный выбор" ;;
-    esac
-done
+        case $choice in
+            1) configure_static_ip ;;
+            2) change_hostname ;;
+            3) configure_masquerade ;;
+            4) test_internet_connection ;;
+            5) check_connections_menu ;;
+            6) break ;;
+            *) warn "Неверный выбор. Введите число от 1 до 6." ;;
+        esac
+    done
+}
+
+# Запуск скрипта
+check_root
+main_menu
