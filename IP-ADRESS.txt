@@ -1,0 +1,492 @@
+#!/bin/bash
+
+# Скрипт для отключения NetworkManager и настройки статических IP адресов
+# Поддерживает Ubuntu (netplan), Debian (interfaces), CentOS/RHEL (network-scripts)
+
+set -e
+
+# Цвета для вывода
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Функции для логирования
+log() {
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+}
+
+error() {
+    echo -e "${RED}[ERROR] $1${NC}"
+}
+
+warn() {
+    echo -e "${YELLOW}[WARNING] $1${NC}"
+}
+
+info() {
+    echo -e "${BLUE}[INFO] $1${NC}"
+}
+
+prompt() {
+    echo -e "${CYAN}[INPUT] $1${NC}"
+}
+
+# Проверка прав root
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        error "Этот скрипт должен быть запущен с правами root"
+        exit 1
+    fi
+}
+
+# Определение операционной системы
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS_NAME=$NAME
+        OS_ID=$ID
+        OS_VER=$VERSION_ID
+    else
+        error "Не удалось определить операционную систему"
+        exit 1
+    fi
+    log "Обнаружена ОС: $OS_NAME $OS_VER"
+}
+
+# Отключение NetworkManager
+disable_networkmanager() {
+    log "Отключение NetworkManager..."
+    
+    # Остановка и отключение NetworkManager
+    if systemctl is-active --quiet NetworkManager; then
+        systemctl stop NetworkManager
+        log "NetworkManager остановлен"
+    fi
+    
+    if systemctl is-enabled --quiet NetworkManager 2>/dev/null; then
+        systemctl disable NetworkManager
+        log "NetworkManager отключен из автозагрузки"
+    fi
+    
+    # Отключение nmtui через маскировку
+    systemctl mask NetworkManager 2>/dev/null || true
+    
+    # Удаление пакета nmtui если установлен
+    if command -v nmtui &> /dev/null; then
+        if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
+            apt remove -y network-manager-gnome network-manager 2>/dev/null || true
+        elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rhel" ]] || [[ "$OS_ID" == "fedora" ]]; then
+            yum remove -y NetworkManager-tui NetworkManager 2>/dev/null || true
+        fi
+    fi
+    
+    log "NetworkManager полностью отключен"
+}
+
+# Получение списка сетевых интерфейсов
+get_interfaces() {
+    interfaces=($(ip link show | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2}' | sed 's/^ *//'))
+    if [[ ${#interfaces[@]} -eq 0 ]]; then
+        error "Не найдено сетевых интерфейсов"
+        exit 1
+    fi
+}
+
+# Валидация IP адреса
+validate_ip() {
+    local ip=$1
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        IFS='.' read -ra ADDR <<< "$ip"
+        for i in "${ADDR[@]}"; do
+            if [[ $i -lt 0 ]] || [[ $i -gt 255 ]]; then
+                return 1
+            fi
+        done
+        return 0
+    fi
+    return 1
+}
+
+# Интерактивный ввод сетевых настроек
+get_network_config() {
+    local interface=$1
+    
+    echo ""
+    info "Настройка интерфейса: $interface"
+    echo "=================================="
+    
+    # IP адрес
+    while true; do
+        prompt "Введите IP адрес для $interface (например: 192.168.1.10): "
+        read -r IP_ADDRESS
+        if validate_ip "$IP_ADDRESS"; then
+            break
+        else
+            error "Неверный формат IP адреса. Попробуйте снова."
+        fi
+    done
+    
+    # Маска подсети
+    while true; do
+        prompt "Введите маску подсети в формате CIDR (например: 24 для /24): "
+        read -r NETMASK
+        if [[ "$NETMASK" =~ ^[0-9]+$ ]] && [[ "$NETMASK" -ge 1 ]] && [[ "$NETMASK" -le 32 ]]; then
+            break
+        else
+            error "Неверный формат маски. Введите число от 1 до 32."
+        fi
+    done
+    
+    # Шлюз по умолчанию
+    while true; do
+        prompt "Введите шлюз по умолчанию (например: 192.168.1.1): "
+        read -r GATEWAY
+        if validate_ip "$GATEWAY"; then
+            break
+        else
+            error "Неверный формат IP адреса шлюза. Попробуйте снова."
+        fi
+    done
+    
+    # DNS серверы
+    prompt "Введите первичный DNS сервер (например: 8.8.8.8): "
+    read -r DNS1
+    while ! validate_ip "$DNS1"; do
+        error "Неверный формат DNS сервера."
+        prompt "Введите первичный DNS сервер: "
+        read -r DNS1
+    done
+    
+    prompt "Введите вторичный DNS сервер (например: 8.8.4.4) [Enter для пропуска]: "
+    read -r DNS2
+    if [[ -n "$DNS2" ]] && ! validate_ip "$DNS2"; then
+        warn "Неверный формат вторичного DNS, будет пропущен"
+        DNS2=""
+    fi
+    
+    # Подтверждение настроек
+    echo ""
+    info "Подтвердите настройки для интерфейса $interface:"
+    echo "IP адрес: $IP_ADDRESS/$NETMASK"
+    echo "Шлюз: $GATEWAY"
+    echo "DNS1: $DNS1"
+    [[ -n "$DNS2" ]] && echo "DNS2: $DNS2"
+    echo ""
+    
+    while true; do
+        prompt "Применить эти настройки? (y/n): "
+        read -r confirm
+        case $confirm in
+            [Yy]* ) return 0;;
+            [Nn]* ) return 1;;
+            * ) warn "Введите y или n";;
+        esac
+    done
+}
+
+# Настройка через netplan (Ubuntu)
+configure_netplan() {
+    local interface=$1
+    
+    log "Настройка сети через netplan..."
+    
+    # Создание резервной копии
+    if [[ -f /etc/netplan/01-netcfg.yaml ]]; then
+        cp /etc/netplan/01-netcfg.yaml /etc/netplan/01-netcfg.yaml.backup
+    fi
+    
+    # Создание конфигурации netplan
+    cat > /etc/netplan/01-static-network.yaml << EOF
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    $interface:
+      dhcp4: false
+      addresses:
+        - $IP_ADDRESS/$NETMASK
+      gateway4: $GATEWAY
+      nameservers:
+        addresses:
+          - $DNS1
+EOF
+
+    # Добавление второго DNS если указан
+    if [[ -n "$DNS2" ]]; then
+        sed -i "/- $DNS1/a\\          - $DNS2" /etc/netplan/01-static-network.yaml
+    fi
+    
+    # Применение настроек
+    netplan apply
+    log "Настройки netplan применены"
+}
+
+# Настройка через /etc/network/interfaces (Debian)
+configure_interfaces() {
+    local interface=$1
+    
+    log "Настройка сети через /etc/network/interfaces..."
+    
+    # Создание резервной копии
+    cp /etc/network/interfaces /etc/network/interfaces.backup
+    
+    # Создание новой конфигурации
+    cat > /etc/network/interfaces << EOF
+# Loopback interface
+auto lo
+iface lo inet loopback
+
+# Static IP configuration for $interface
+auto $interface
+iface $interface inet static
+    address $IP_ADDRESS
+    netmask $(ipcalc -m $IP_ADDRESS/$NETMASK | cut -d= -f2)
+    gateway $GATEWAY
+    dns-nameservers $DNS1${DNS2:+ $DNS2}
+EOF
+    
+    # Перезапуск сетевых интерфейсов
+    ifdown $interface && ifup $interface
+    log "Настройки interfaces применены"
+}
+
+# Настройка через network-scripts (CentOS/RHEL)
+configure_network_scripts() {
+    local interface=$1
+    
+    log "Настройка сети через network-scripts..."
+    
+    # Создание резервной копии
+    if [[ -f /etc/sysconfig/network-scripts/ifcfg-$interface ]]; then
+        cp /etc/sysconfig/network-scripts/ifcfg-$interface /etc/sysconfig/network-scripts/ifcfg-$interface.backup
+    fi
+    
+    # Создание конфигурации интерфейса
+    cat > /etc/sysconfig/network-scripts/ifcfg-$interface << EOF
+TYPE=Ethernet
+BOOTPROTO=static
+NAME=$interface
+DEVICE=$interface
+ONBOOT=yes
+IPADDR=$IP_ADDRESS
+PREFIX=$NETMASK
+GATEWAY=$GATEWAY
+DNS1=$DNS1
+EOF
+
+    # Добавление второго DNS если указан
+    if [[ -n "$DNS2" ]]; then
+        echo "DNS2=$DNS2" >> /etc/sysconfig/network-scripts/ifcfg-$interface
+    fi
+    
+    # Перезапуск сетевого сервиса
+    systemctl restart network
+    log "Настройки network-scripts применены"
+}
+
+# Настройка через systemd-networkd
+configure_systemd_networkd() {
+    local interface=$1
+    
+    log "Настройка сети через systemd-networkd..."
+    
+    # Включение systemd-networkd
+    systemctl enable systemd-networkd
+    systemctl enable systemd-resolved
+    
+    # Создание конфигурации
+    cat > /etc/systemd/network/10-static-$interface.network << EOF
+[Match]
+Name=$interface
+
+[Network]
+Address=$IP_ADDRESS/$NETMASK
+Gateway=$GATEWAY
+DNS=$DNS1
+EOF
+
+    # Добавление второго DNS если указан
+    if [[ -n "$DNS2" ]]; then
+        echo "DNS=$DNS2" >> /etc/systemd/network/10-static-$interface.network
+    fi
+    
+    # Перезапуск сервисов
+    systemctl restart systemd-networkd
+    systemctl restart systemd-resolved
+    
+    log "Настройки systemd-networkd применены"
+}
+
+# Применение сетевых настроек
+apply_network_config() {
+    local interface=$1
+    
+    case "$OS_ID" in
+        ubuntu)
+            if command -v netplan &> /dev/null; then
+                configure_netplan "$interface"
+            else
+                configure_systemd_networkd "$interface"
+            fi
+            ;;
+        debian)
+            if [[ -f /etc/network/interfaces ]]; then
+                configure_interfaces "$interface"
+            else
+                configure_systemd_networkd "$interface"
+            fi
+            ;;
+        centos|rhel|fedora)
+            if [[ -d /etc/sysconfig/network-scripts ]]; then
+                configure_network_scripts "$interface"
+            else
+                configure_systemd_networkd "$interface"
+            fi
+            ;;
+        *)
+            warn "Неизвестная ОС, используем systemd-networkd"
+            configure_systemd_networkd "$interface"
+            ;;
+    esac
+}
+
+# Проверка сетевого подключения
+test_connectivity() {
+    log "Проверка сетевого подключения..."
+    
+    # Проверка локального интерфейса
+    if ip addr show | grep -q "$IP_ADDRESS"; then
+        log "✓ IP адрес $IP_ADDRESS успешно назначен"
+    else
+        error "✗ IP адрес не назначен"
+        return 1
+    fi
+    
+    # Проверка шлюза
+    if ping -c 1 -W 3 "$GATEWAY" &>/dev/null; then
+        log "✓ Шлюз $GATEWAY доступен"
+    else
+        warn "✗ Шлюз $GATEWAY недоступен"
+    fi
+    
+    # Проверка DNS
+    if ping -c 1 -W 3 "$DNS1" &>/dev/null; then
+        log "✓ DNS сервер $DNS1 доступен"
+    else
+        warn "✗ DNS сервер $DNS1 недоступен"
+    fi
+    
+    # Проверка интернета
+    if ping -c 1 -W 5 8.8.8.8 &>/dev/null; then
+        log "✓ Подключение к интернету работает"
+    else
+        warn "✗ Нет подключения к интернету"
+    fi
+}
+
+# Вывод информации о сети
+show_network_info() {
+    echo ""
+    info "Текущая конфигурация сети:"
+    echo "=========================="
+    ip addr show | grep -E "inet |^[0-9]|state"
+    echo ""
+    info "Таблица маршрутизации:"
+    echo "====================="
+    ip route show
+    echo ""
+    info "DNS настройки:"
+    echo "=============="
+    if [[ -f /etc/resolv.conf ]]; then
+        cat /etc/resolv.conf | grep nameserver
+    fi
+}
+
+# Главная функция
+main() {
+    echo ""
+    log "Скрипт настройки статических IP адресов"
+    echo "========================================"
+    
+    check_root
+    detect_os
+    
+    # Вопрос о продолжении
+    warn "ВНИМАНИЕ: Этот скрипт отключит NetworkManager и настроит статические IP адреса."
+    warn "Убедитесь, что у вас есть физический доступ к машине!"
+    echo ""
+    
+    while true; do
+        prompt "Продолжить? (y/n): "
+        read -r confirm
+        case $confirm in
+            [Yy]* ) break;;
+            [Nn]* ) exit 0;;
+            * ) warn "Введите y или n";;
+        esac
+    done
+    
+    # Отключение NetworkManager
+    disable_networkmanager
+    
+    # Получение списка интерфейсов
+    get_interfaces
+    
+    echo ""
+    info "Доступные сетевые интерфейсы:"
+    for i in "${!interfaces[@]}"; do
+        echo "  $((i+1))) ${interfaces[$i]}"
+    done
+    
+    # Выбор интерфейса
+    while true; do
+        prompt "Выберите интерфейс для настройки (1-${#interfaces[@]}): "
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+            selected_interface=${interfaces[$((choice-1))]}
+            break
+        else
+            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
+        fi
+    done
+    
+    # Получение настроек от пользователя
+    if get_network_config "$selected_interface"; then
+        # Применение настроек
+        apply_network_config "$selected_interface"
+        
+        # Небольшая пауза для применения настроек
+        sleep 3
+        
+        # Проверка подключения
+        test_connectivity
+        
+        # Вывод информации о сети
+        show_network_info
+        
+        log "Настройка сети завершена успешно!"
+        
+        # Предложение настроить другие интерфейсы
+        if [[ ${#interfaces[@]} -gt 1 ]]; then
+            echo ""
+            prompt "Настроить другой интерфейс? (y/n): "
+            read -r configure_more
+            if [[ $configure_more =~ ^[Yy] ]]; then
+                exec "$0"  # Перезапуск скрипта
+            fi
+        fi
+        
+    else
+        warn "Настройка отменена пользователем"
+        exit 1
+    fi
+}
+
+# Обработка сигналов
+trap 'error "Скрипт прерван пользователем"; exit 1' INT TERM
+
+# Запуск главной функции
+main "$@"
