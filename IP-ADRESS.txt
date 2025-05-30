@@ -1,88 +1,196 @@
 #!/bin/bash
 
+# Цвета для вывода
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Функции для логирования
+log() {
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+}
+error() {
+    echo -e "${RED}[ERROR] $1${NC}"
+}
+warn() {
+    echo -e "${YELLOW}[WARNING] $1${NC}"
+}
+info() {
+    echo -e "${BLUE}[INFO] $1${NC}"
+}
+prompt() {
+    echo -e "${CYAN}[INPUT] $1${NC}"
+}
+
 # Проверка прав root
-if [[ $EUID -ne 0 ]]; then
-    echo "Этот скрипт должен быть запущен с правами root" 
-    exit 1
-fi
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        error "Этот скрипт должен быть запущен с правами root"
+        exit 1
+    fi
+}
 
 # Отключение NetworkManager
-echo "Отключение NetworkManager..."
-systemctl stop NetworkManager
-systemctl disable NetworkManager
+disable_networkmanager() {
+    log "Отключение NetworkManager..."
+    systemctl stop NetworkManager
+    systemctl disable NetworkManager
+    systemctl mask NetworkManager
+    log "NetworkManager полностью отключен"
+}
 
-# Получение списка доступных интерфейсов
-echo "Доступные сетевые интерфейсы:"
-interfaces=($(ip link show | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2}' | sed 's/^ *//'))
-if [[ ${#interfaces[@]} -eq 0 ]]; then
-    echo "Ошибка: Нет доступных сетевых интерфейсов."
-    exit 1
-fi
-
-# Вывод списка интерфейсов для выбора
-for i in "${!interfaces[@]}"; do
-    echo "  $((i+1))) ${interfaces[$i]}"
-done
-
-# Запрос выбора интерфейса
-while true; do
-    read -p "Выберите номер интерфейса (1-${#interfaces[@]}): " choice
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
-        interface=${interfaces[$((choice-1))]}
-        break
-    else
-        echo "Неверный выбор. Пожалуйста, введите число от 1 до ${#interfaces[@]}."
+# Получение списка сетевых интерфейсов
+get_interfaces() {
+    interfaces=($(ip link show | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2}' | sed 's/^ *//'))
+    if [[ ${#interfaces[@]} -eq 0 ]]; then
+        error "Не найдено сетевых интерфейсов"
+        exit 1
     fi
-done
+}
 
-# Запрос сетевых настроек
-read -p "Введите IP адрес для $interface: " ip
-read -p "Введите маску (CIDR, например, 24): " mask
-read -p "Введите шлюз: " gateway
-read -p "Введите DNS сервер: " dns
+# Настройка статического IP
+configure_static_ip() {
+    get_interfaces
+    echo ""
+    info "Доступные сетевые интерфейсы:"
+    for i in "${!interfaces[@]}"; do
+        echo "  $((i+1))) ${interfaces[$i]}"
+    done
 
-# Применение настроек
-echo "Применение настроек для интерфейса $interface..."
-ip addr flush dev $interface
-ip addr add ${ip}/${mask} dev $interface
-ip link set $interface up
-ip route add default via $gateway
-echo "nameserver $dns" > /etc/resolv.conf
+    while true; do
+        prompt "Выберите интерфейс для настройки (1-${#interfaces[@]}): "
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+            selected_interface=${interfaces[$((choice-1))]}
+            break
+        else
+            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
+        fi
+    done
 
-# Проверка подключения
-echo "Проверка подключения через ping 8.8.8.8..."
-ping -c 3 8.8.8.8 || echo "Подключение к интернету недоступно."
+    read -p "Введите IP адрес: " ip
+    read -p "Введите маску (CIDR, например, 24): " mask
+    read -p "Введите шлюз: " gateway
+    read -p "Введите DNS сервер: " dns
 
-# Настройка IP-форвардинга и маскарадинга
-echo "Настройка IP-форвардинга и маскарадинга..."
+    log "Применение настроек для интерфейса $selected_interface..."
+    ip addr flush dev $selected_interface
+    ip addr add ${ip}/${mask} dev $selected_interface
+    ip link set $selected_interface up
+    ip route add default via $gateway
+    echo "nameserver $dns" > /etc/resolv.conf
+    log "Настройка завершена!"
+}
 
-# Включение IP-форвардинга
-echo "Включение IP-форвардинга в /etc/sysctl.conf..."
-if grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
-    echo "IP-форвардинг уже включен."
-else
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    sysctl -p
-    echo "IP-форвардинг включен."
-fi
+# Изменение имени хоста
+change_hostname() {
+    local hostnames=("isp.au-team.irpo" "hq-rtr.au-team.irpo" "br-rtr.au-team.irpo" "hq-srv.au-team.irpo" "hq-cli.au-team.irpo" "br-srv.au-team.irpo")
+    echo ""
+    info "Доступные варианты имени хоста:"
+    for i in "${!hostnames[@]}"; do
+        echo "  $((i+1))) ${hostnames[$i]}"
+    done
+    echo "  $((${#hostnames[@]}+1))) Ввести своё имя"
+
+    while true; do
+        prompt "Выберите вариант (1-$(( ${#hostnames[@]}+1 ))): "
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le $((${#hostnames[@]}+1)) ]]; then
+            if [[ "$choice" -le ${#hostnames[@]} ]]; then
+                new_hostname=${hostnames[$((choice-1))]}
+            else
+                read -p "Введите новое имя хоста: " new_hostname
+            fi
+            break
+        else
+            error "Неверный выбор. Введите число от 1 до $((${#hostnames[@]}+1))"
+        fi
+    done
+
+    log "Установка нового имени хоста: $new_hostname"
+    hostnamectl set-hostname "$new_hostname"
+    exec bash
+    log "Имя хоста изменено!"
+}
 
 # Настройка маскарадинга
-echo "Настройка маскарадинга для интерфейса $interface..."
-iptables -t nat -A POSTROUTING -o $interface -j MASQUERADE
-echo "Маскарадинг настроен."
+configure_masquerade() {
+    get_interfaces
+    echo ""
+    info "Доступные сетевые интерфейсы:"
+    for i in "${!interfaces[@]}"; do
+        echo "  $((i+1))) ${interfaces[$i]}"
+    done
 
-# Установка iptables-persistent
-echo "Установка iptables-persistent..."
-apt update
-DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
-echo "iptables-persistent установлен."
+    while true; do
+        prompt "Выберите внешний интерфейс для маскарадинга (1-${#interfaces[@]}): "
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+            interface=${interfaces[$((choice-1))]}
+            break
+        else
+            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
+        fi
+    done
 
-# Сохранение правил iptables
-echo "Сохранение правил iptables..."
-netfilter-persistent save
-echo "Правила iptables сохранены."
+    log "Настройка IP-форвардинга и маскарадинга..."
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+    sysctl -p
+    iptables -t nat -A POSTROUTING -o $interface -j MASQUERADE
+    apt update
+    DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
+    netfilter-persistent save
+    log "Маскарадинг настроен!"
+}
 
-echo "Настройка завершена!"
+# Проверка интернета
+test_internet_connection() {
+    log "Проверка подключения к интернету через ping 8.8.8.8..."
+    ping -c 3 8.8.8.8 || warn "Подключение к интернету недоступно."
+}
+
+# Проверка соединений
+show_network_info() {
+    log "Текущая конфигурация сети:"
+    ip -c a
+    log "Таблица маршрутизации:"
+    ip route show
+}
+
+# Главное меню
+main_menu() {
+    while true; do
+        echo ""
+        info "Главное меню:"
+        echo "1) Настройка статического IP"
+        echo "2) Изменение имени хоста"
+        echo "3) Настройка маскарадинга"
+        echo "4) Проверка интернета"
+        echo "5) Проверка соединений"
+        echo "6) Выход"
+        prompt "Выберите действие (1-6): "
+        read -r choice
+
+        case $choice in
+            1) configure_static_ip ;;
+            2) change_hostname ;;
+            3) configure_masquerade ;;
+            4) test_internet_connection ;;
+            5) show_network_info ;;
+            6) break ;;
+            *) warn "Неверный выбор. Введите число от 1 до 6." ;;
+        esac
+    done
+}
+
+# Запуск скрипта
+check_root
+main_menu
+
+
 
 
 
