@@ -246,7 +246,7 @@ configure_masquerade() {
     done
 
     while true; do
-        prompt "Интерфейс, который идёт не с этого устройства (1-${#interfaces[@]}): "
+        prompt "Выберите внешний интерфейс для маскарадинга (1-${#interfaces[@]}): "
         read -r choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
             external_interface=${interfaces[$((choice-1))]}
@@ -257,7 +257,7 @@ configure_masquerade() {
     done
 
     while true; do
-        prompt "Интерфейс, который идёт с этого устройства(1-${#interfaces[@]}): "
+        prompt "Выберите внутренний интерфейс для локальной сети (1-${#interfaces[@]}): "
         read -r choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
             internal_interface=${interfaces[$((choice-1))]}
@@ -282,13 +282,11 @@ configure_masquerade() {
     iptables -A FORWARD -i $external_interface -o $internal_interface -m state --state RELATED,ESTABLISHED -j ACCEPT
     iptables -A FORWARD -i $internal_interface -o $external_interface -j ACCEPT
 
-    # Сохранение правил
-    if ! command -v iptables-save &>/dev/null; then
-        log "Установка iptables-persistent..."
-        apt update
-        DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
-    fi
-    iptables-save > /etc/iptables/rules.v4
+    # Сохранение правил через netfilter-persistent
+    log "Установка и сохранение правил iptables..."
+    apt update
+    DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
+    netfilter-persistent save
 
     log "Маскарадинг настроен и сохранен!"
 }
