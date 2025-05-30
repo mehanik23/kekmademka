@@ -1,5 +1,38 @@
 #!/bin/bash
 
+save_network_config() {
+    local interface=$1
+    local ip_address=$2
+    local netmask=$3
+    local gateway=$4
+    local dns1=$5
+    local dns2=$6
+
+    log "Сохранение сетевых настроек для интерфейса $interface..."
+
+    # Создание конфигурации systemd-networkd
+    cat > /etc/systemd/network/10-static-$interface.network << EOF
+[Match]
+Name=$interface
+
+[Network]
+Address=$ip_address/$netmask
+Gateway=$gateway
+DNS=$dns1
+EOF
+
+    # Добавление второго DNS, если он указан
+    if [[ -n "$dns2" ]]; then
+        echo "DNS=$dns2" >> /etc/systemd/network/10-static-$interface.network
+    fi
+
+    # Включение и перезапуск systemd-networkd
+    systemctl enable systemd-networkd
+    systemctl restart systemd-networkd
+
+    log "Настройки для интерфейса $interface сохранены и будут применены при перезагрузке."
+}
+
 # Цвета для вывода
 RED='\033[0;31m'
 GREEN='\033[0;32m'
