@@ -10,7 +10,7 @@ NC='\033[0m'
 
 # Функции для логирования
 log() {
-    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+    echo -e "${CYAN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
 }
 error() {
     echo -e "${RED}[ERROR] $1${NC}"
@@ -22,7 +22,7 @@ info() {
     echo -e "${BLUE}[INFO] $1${NC}"
 }
 prompt() {
-    echo -e "${CYAN}[INPUT] $1${NC}"
+    echo -e "${YELLOW}[INPUT] $1${NC}"
 }
 
 # Проверка прав root
@@ -33,134 +33,7 @@ check_root() {
     fi
 }
 
-# Главное меню
-main_menu() {
-    while true; do
-        echo ""
-        info "Главное меню:"
-        echo "1) Настройка DHCP-сервера"
-        echo "2) Удалить DHCP-сервер"
-        echo "3) Настройка DNS"
-        echo "4) Удалить DNS"
-        echo "5) Выход"
-        prompt "Выберите действие (1-5): "
-        read -r choice
-
-        case $choice in
-            1) configure_dhcp ;;
-            2) remove_dhcp ;;
-            3) configure_dns ;;
-            4) remove_dns ;;
-            5) break ;;
-            *) warn "Неверный выбор. Введите число от 1 до 5." ;;
-        esac
-    done
-}
-
-# Функция: настройка DHCP-сервера
-configure_dhcp() {
-    log "Проверка наличия isc-dhcp-server..."
-    if ! command -v dhcpd &>/dev/null; then
-        log "Установка isc-dhcp-server..."
-        apt update
-        apt install -y isc-dhcp-server
-    fi
-
-    # Получение интерфейса
-    get_interfaces
-    echo ""
-    info "Доступные сетевые интерфейсы:"
-    for i in "${!interfaces[@]}"; do
-        echo "  $((i+1))) ${interfaces[$i]}"
-    done
-
-    while true; do
-        prompt "Выберите интерфейс для работы DHCP (1-${#interfaces[@]}): "
-        read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
-            selected_interface=${interfaces[$((choice-1))]}
-            break
-        else
-            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
-        fi
-    done
-
-    # Запрос параметров
-    prompt "Введите IP-адрес подсети (например, 192.168.1.0/24): "
-    read -r subnet_ip
-
-    prompt "Введите начало диапазона выдачи IP (например, 192.168.1.100): "
-    read -r start_ip
-
-    prompt "Введите конец диапазона выдачи IP (например, 192.168.1.200): "
-    read -r end_ip
-
-    prompt "Введите шлюз по умолчанию (например, 192.168.1.1): "
-    read -r gateway
-
-    prompt "Введите DNS-сервер (например, 8.8.8.8): "
-    read -r dns_server
-
-    log "Настройка DHCP-сервера..."
-
-    cat > /etc/dhcp/dhcpd.conf <<EOF
-subnet $subnet_ip netmask $(ipcalc -n $subnet_ip | cut -d= -f2) {
-  range $start_ip $end_ip;
-  option routers $gateway;
-  option domain-name-servers $dns_server;
-  default-lease-time 600;
-  max-lease-time 7200;
-}
-EOF
-
-    echo "INTERFACES=\"$selected_interface\"" > /etc/default/isc-dhcp-server
-
-    systemctl restart isc-dhcp-server
-    systemctl enable isc-dhcp-server
-
-    log "DHCP-сервер настроен!"
-}
-
-# Функция: удаление DHCP-сервера
-remove_dhcp() {
-    log "Удаление DHCP-сервера..."
-    if ! command -v dhcpd &>/dev/null; then
-        warn "DHCP-сервер не установлен."
-        return
-    fi
-
-    systemctl stop isc-dhcp-server
-    systemctl disable isc-dhcp-server
-
-    rm -f /etc/dhcp/dhcpd.conf
-    rm -f /etc/default/isc-dhcp-server
-
-    apt purge -y isc-dhcp-server isc-dhcp-server-bin isc-dhcp-common
-    apt autoremove -y
-
-    log "DHCP-сервер удален!"
-}
-
-# Функция: настройка DNS
-configure_dns() {
-    prompt "Введите IP-адрес DNS-сервера: "
-    read -r dns_ip
-
-    log "Настройка DNS на устройстве..."
-    echo "nameserver $dns_ip" > /etc/resolv.conf
-
-    log "DNS настроен!"
-}
-
-# Функция: удаление DNS
-remove_dns() {
-    log "Удаление DNS настроек..."
-    echo "" > /etc/resolv.conf
-
-    log "DNS настройки удалены!"
-}
-
-# Функция: получить список интерфейсов
+# Получение списка интерфейсов
 get_interfaces() {
     interfaces=($(ip link show | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2}' | sed 's/^ *//'))
     if [[ ${#interfaces[@]} -eq 0 ]]; then
@@ -169,5 +42,117 @@ get_interfaces() {
     fi
 }
 
+# Вспомогательная функция: получить маску из CIDR
+cidr_to_mask() {
+    local cidr=$1
+    local mask=""
+    for i in {0..3}; do
+        local bit=$(( 8 - ((cidr - 1) % 8) ))
+        if [[ $i == $(($cidr / 8)) ]]; then
+            mask+=$(printf "%d" "$((0xFF << (8 - $bit)))")
+        else
+            mask+="255"
+        fi
+        if [[ $i != 3 ]]; then
+            mask+="."
+        fi
+    done
+    echo "$mask"
+}
+
+# Меню: настройка DHCP
+configure_dhcp() {
+    get_interfaces
+    echo ""
+    info "Доступные сетевые интерфейсы:"
+    for i in "${!interfaces[@]}"; do
+        echo "  $((i+1))) ${interfaces[$i]}"
+    done
+
+    while true; do
+        prompt "Выберите интерфейс для настройки DHCP (1-${#interfaces[@]}): "
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+            interface=${interfaces[$((choice-1))]}
+            break
+        else
+            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
+        fi
+    done
+
+    # Запрос параметров
+    prompt "Введите IP подсети (например, 192.168.1.0/24): "
+    read -r subnet_ip
+
+    prompt "Введите начало диапазона IP (например, 192.168.1.100): "
+    read -r start_ip
+
+    prompt "Введите конец диапазона IP (например, 192.168.1.200): "
+    read -r end_ip
+
+    prompt "Введите шлюз по умолчанию (например, 192.168.1.1): "
+    read -r gateway
+
+    prompt "Введите DNS сервер (например, 8.8.8.8): "
+    read -r dns_server
+
+    log "Настройка DHCP-сервера на интерфейсе $interface..."
+
+    cat > /etc/systemd/network/10-dhcp-$interface.network << EOF
+[Match]
+Name=$interface
+
+[Network]
+Address=$subnet_ip
+Gateway=$gateway
+DNS=$dns_server
+
+[DHCPServer]
+PoolOffset=$start_ip
+PoolSize=$((end_ip - start_ip))
+EOF
+
+    systemctl enable systemd-networkd
+    systemctl restart systemd-networkd
+
+    log "DHCP-сервер настроен!"
+}
+
+# Меню: удалить DHCP
+remove_dhcp() {
+    if [[ ! -f /etc/systemd/network/10-dhcp-* ]]; then
+        warn "Файлы конфигурации DHCP не найдены."
+        return
+    fi
+
+    log "Удаление DHCP-конфигурации..."
+    rm -f /etc/systemd/network/10-dhcp-*
+    systemctl stop systemd-networkd
+    systemctl disable systemd-networkd
+
+    log "DHCP-сервер удален!"
+}
+
 # Главное меню
+main_menu() {
+    while true; do
+        echo ""
+        info "Меню управления DHCP"
+        echo "1) Настроить DHCP на устройстве"
+        echo "2) Удалить DHCP на устройстве"
+        echo "3) Выход"
+        prompt "Выберите действие (1-3): "
+        read -r choice
+
+        case $choice in
+            1) configure_dhcp ;;
+            2) remove_dhcp ;;
+            3) break ;;
+            *) warn "Неверный выбор. Введите число от 1 до 3." ;;
+        esac
+    done
+}
+
+# Запуск скрипта
+check_root
 main_menu
