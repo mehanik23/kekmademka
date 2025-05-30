@@ -42,25 +42,7 @@ get_interfaces() {
     fi
 }
 
-# Вспомогательная функция: получить маску из CIDR
-cidr_to_mask() {
-    local cidr=$1
-    local mask=""
-    for i in {0..3}; do
-        local bit=$((8 - ((cidr - 1) % 8)))
-        if [[ $i == $(($cidr / 8)) ]]; then
-            mask+=$(printf "%d" "$((0xFF << (8 - $bit)))")
-        else
-            mask+="255"
-        fi
-        if [[ $i != 3 ]]; then
-            mask+="."
-        fi
-    done
-    echo "$mask"
-}
-
-# Меню: Настройка DHCP
+# Настройка DHCP-сервера через systemd-networkd
 configure_dhcp() {
     get_interfaces
     echo ""
@@ -83,19 +65,19 @@ configure_dhcp() {
     prompt "Введите IP подсети (например, 192.168.1.0/24): "
     read -r subnet_ip
 
-    prompt "Введите начало диапазона IP (например, 192.168.1.100): "
+    prompt "Введите начало диапазона аренды (например, 192.168.1.100): "
     read -r start_ip
 
-    prompt "Введите конец диапазона IP (например, 192.168.1.200): "
+    prompt "Введите конец диапазона аренды (например, 192.168.1.200): "
     read -r end_ip
 
     prompt "Введите шлюз по умолчанию (например, 192.168.1.1): "
     read -r gateway
 
-    prompt "Введите DNS-сервер (например, 8.8.8.8): "
+    prompt "Введите первичный DNS сервер (например, 8.8.8.8): "
     read -r dns_server
 
-    log "Настройка DHCP-сервера..."
+    log "Настройка DHCP-сервера на интерфейсе $interface..."
 
     cat > /etc/systemd/network/10-dhcp-$interface.network <<EOF
 [Match]
@@ -117,7 +99,7 @@ EOF
     log "DHCP-сервер настроен!"
 }
 
-# Меню: Удаление DHCP
+# Удаление DHCP-конфигурации
 remove_dhcp() {
     if [[ ! -f /etc/systemd/network/10-dhcp-* ]]; then
         warn "Файлы конфигурации DHCP не найдены."
@@ -132,7 +114,7 @@ remove_dhcp() {
     log "DHCP-сервер удален!"
 }
 
-# Меню: Настройка DNS
+# Настройка DNS
 configure_dns() {
     prompt "Введите IP-адрес DNS-сервера: "
     read -r dns_ip
@@ -143,7 +125,7 @@ configure_dns() {
     log "DNS настроен!"
 }
 
-# Меню: Удаление DNS
+# Удаление DNS
 remove_dns() {
     log "Удаление DNS настроек..."
     echo "" > /etc/resolv.conf
@@ -155,40 +137,26 @@ remove_dns() {
 main_menu() {
     while true; do
         echo ""
-        info "Главное меню:"
-        echo "1) Настройка статического IP"
-        echo "2) Изменение имени хоста"
-        echo "3) Настройка маскарадинга"
-        echo "4) Проверка интернета"
-        echo "5) Проверка соединений"
-        echo "6) Управление пользователями"
-        echo "7) SSH подключение"
-        echo "8) Сброс настроек"
-        echo "9) Настройка DHCP"
-        echo "10) Удалить DHCP"
-        echo "11) Настройка DNS"
-        echo "12) Удалить DNS"
-        echo "13) Выход"
-        prompt "Выберите действие (1-13): "
+        info "Меню управления DHCP и DNS"
+        echo "1) Настроить DHCP-сервер"
+        echo "2) Удалить DHCP-сервер"
+        echo "3) Настроить DNS"
+        echo "4) Удалить DNS"
+        echo "5) Выход"
+        prompt "Выберите действие (1-5): "
         read -r choice
 
         case $choice in
-            1) configure_static_ip ;;
-            2) change_hostname_menu ;;
-            3) configure_masquerade ;;
-            4) test_internet_connection ;;
-            5) check_connections_menu ;;
-            6) create_user_menu ;;
-            7) ssh_connection ;;
-            8) reset_settings_menu ;;
-            9) configure_dhcp ;;
-            10) remove_dhcp ;;
-            11) configure_dns ;;
-            12) remove_dns ;;
-            13) break ;;
-            *) warn "Неверный выбор. Введите число от 1 до 13." ;;
+            1) configure_dhcp ;;
+            2) remove_dhcp ;;
+            3) configure_dns ;;
+            4) remove_dns ;;
+            5) break ;;
+            *) warn "Неверный выбор. Введите число от 1 до 5." ;;
         esac
     done
 }
 
-# Обновленное главное меню с пунктами DHCP и DNS
+# Запуск скрипта
+check_root
+main_menu
