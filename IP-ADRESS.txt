@@ -6,11 +6,12 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m' # Яркий цвет для главного меню
 NC='\033[0m'
 
 # Функции для логирования
 log() {
-    echo -e "${CYAN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
 }
 error() {
     echo -e "${RED}[ERROR] $1${NC}"
@@ -19,10 +20,10 @@ warn() {
     echo -e "${YELLOW}[WARNING] $1${NC}"
 }
 info() {
-    echo -e "${BLUE}[INFO] $1${NC}"
+    echo -e "${MAGENTA}[INFO] $1${NC}" # Изменён цвет на яркий
 }
 prompt() {
-    echo -e "${YELLOW}[INPUT] $1${NC}"
+    echo -e "${CYAN}[INPUT] $1${NC}"
 }
 
 # Проверка прав root
@@ -33,273 +34,161 @@ check_root() {
     fi
 }
 
-# Отключение NetworkManager
-disable_networkmanager() {
-    log "Отключение NetworkManager..."
-    systemctl stop NetworkManager
-    systemctl disable NetworkManager
-    systemctl mask NetworkManager
-    log "NetworkManager полностью отключен"
-}
-
-# Получение списка сетевых интерфейсов
-get_interfaces() {
-    interfaces=($(ip link show | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2}' | sed 's/^ *//'))
-    if [[ ${#interfaces[@]} -eq 0 ]]; then
-        error "Не найдено сетевых интерфейсов"
-        exit 1
+# Установка dialog, если не установлена
+install_dialog() {
+    if ! command -v dialog &>/dev/null; then
+        log "Установка dialog..."
+        if [[ -f /etc/os-release ]]; then
+            . /etc/os-release
+            case "$ID" in
+                ubuntu|debian)
+                    apt update
+                    apt install -y dialog
+                    ;;
+                centos|rhel|fedora)
+                    yum install -y dialog
+                    ;;
+                *)
+                    error "Неизвестная ОС. Установите dialog вручную."
+                    exit 1
+                    ;;
+            esac
+        else
+            error "Не удалось определить ОС. Установите dialog вручную."
+            exit 1
+        fi
     fi
 }
 
-# Настройка статического IP
-configure_static_ip() {
-    get_interfaces
-    echo ""
-    info "Доступные сетевые интерфейсы:"
-    for i in "${!interfaces[@]}"; do
-        echo "  $((i+1))) ${interfaces[$i]}"
-    done
-
-    while true; do
-        prompt "Выберите интерфейс для настройки (1-${#interfaces[@]}): "
-        read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
-            selected_interface=${interfaces[$((choice-1))]}
-            break
-        else
-            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
-        fi
-    done
-
-    read -p "Введите IP адрес: " ip
-    read -p "Введите маску (CIDR, например, 24): " mask
-    read -p "Введите шлюз: " gateway
-    read -p "Введите DNS сервер: " dns
-
-    log "Применение настроек для интерфейса $selected_interface..."
-    ip addr flush dev $selected_interface
-    ip addr add ${ip}/${mask} dev $selected_interface
-    ip link set $selected_interface up
-    ip route add default via $gateway
-    echo "nameserver $dns" > /etc/resolv.conf
-    log "Настройка завершена!"
-}
-
-# Изменение имени хоста
-change_hostname() {
-    local hostnames=("isp.au-team.irpo" "hq-rtr.au-team.irpo" "br-rtr.au-team.irpo" "hq-srv.au-team.irpo" "hq-cli.au-team.irpo" "br-srv.au-team.irpo")
-    echo ""
-    info "Доступные варианты имени хоста:"
-    for i in "${!hostnames[@]}"; do
-        echo "  $((i+1))) ${hostnames[$i]}"
-    done
-    echo "  $((${#hostnames[@]}+1))) Ввести своё имя"
-
-    while true; do
-        prompt "Выберите вариант (1-$(( ${#hostnames[@]}+1 ))): "
-        read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le $((${#hostnames[@]}+1)) ]]; then
-            if [[ "$choice" -le ${#hostnames[@]} ]]; then
-                new_hostname=${hostnames[$((choice-1))]}
-            else
-                read -p "Введите новое имя хоста: " new_hostname
-            fi
-            break
-        else
-            error "Неверный выбор. Введите число от 1 до $((${#hostnames[@]}+1))"
-        fi
-    done
-
-    log "Установка нового имени хоста: $new_hostname"
-    hostnamectl set-hostname "$new_hostname"
-    exec bash
-    log "Имя хоста изменено!"
-}
-
-# Настройка маскарадинга
-configure_masquerade() {
-    get_interfaces
-    echo ""
-    info "Доступные сетевые интерфейсы:"
-    for i in "${!interfaces[@]}"; do
-        echo "  $((i+1))) ${interfaces[$i]}"
-    done
-
-    while true; do
-        prompt "Выберите внешний интерфейс для маскарадинга (1-${#interfaces[@]}): "
-        read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
-            interface=${interfaces[$((choice-1))]}
-            break
-        else
-            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
-        fi
-    done
-
-    log "Настройка IP-форвардинга и маскарадинга..."
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    sysctl -p
-    iptables -t nat -A POSTROUTING -o $interface -j MASQUERADE
-    apt update
-    DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
-    netfilter-persistent save
-    log "Маскарадинг настроен!"
-}
-
-# Проверка интернета
-test_internet_connection() {
-    log "Проверка подключения к интернету через ping 8.8.8.8..."
-    ping -c 3 8.8.8.8 || warn "Подключение к интернету недоступно."
-}
-
-# Проверка соединений
-show_network_info() {
-    log "Текущая конфигурация сети:"
-    ip -c a
-    log "Таблица маршрутизации:"
-    ip route show
-}
-
-# Создание пользователя
-create_user_menu() {
-    while true; do
-        echo ""
-        info "Меню создания пользователя:"
-        echo "1) Создать нового пользователя"
-        echo "2) Просмотреть список пользователей"
-        echo "3) Вернуться в главное меню"
-        prompt "Выберите действие (1-3): "
-        read -r choice
-
-        case $choice in
-            1)
-                prompt "Введите имя нового пользователя: "
-                read -r username
-                if id "$username" &>/dev/null; then
-                    warn "Пользователь '$username' уже существует."
-                else
-                    log "Создание пользователя '$username'..."
-                    useradd -m -s /bin/bash "$username"
-                    passwd "$username"
-                    log "Пользователь '$username' успешно создан!"
-                fi
-                ;;
-            2)
-                log "Список пользователей:"
-                cut -d: -f1 /etc/passwd
-                ;;
-            3) break ;;
-            *) warn "Неверный выбор. Введите число от 1 до 3." ;;
-        esac
-    done
-}
-
-# SSH подключение
-ssh_connection() {
-    prompt "Введите имя пользователя для SSH: "
-    read -r ssh_user
-    prompt "Введите IP адрес для SSH: "
-    read -r ssh_ip
-    if [[ "$ssh_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        log "Подключение к $ssh_user@$ssh_ip через SSH..."
-        ssh "$ssh_user@$ssh_ip"
-    else
-        error "Неверный формат IP адреса."
-    fi
-}
-
-# Сброс настроек
-reset_settings_menu() {
-    while true; do
-        echo ""
-        info "Меню сброса настроек:"
-        echo "1) Сброс сетевых настроек"
-        echo "2) Сброс имени хоста"
-        echo "3) Удаление пользователей"
-        echo "4) Вернуться в главное меню"
-        prompt "Выберите действие (1-4): "
-        read -r choice
-
-        case $choice in
-            1)
-                get_interfaces
-                echo ""
-                info "Доступные сетевые интерфейсы:"
-                for i in "${!interfaces[@]}"; do
-                    echo "  $((i+1))) ${interfaces[$i]}"
-                done
-
-                while true; do
-                    prompt "Выберите интерфейс для сброса (1-${#interfaces[@]}): "
-                    read -r choice
-                    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
-                        interface=${interfaces[$((choice-1))]}
-                        break
-                    else
-                        error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
-                    fi
-                done
-
-                log "Сброс настроек для интерфейса $interface..."
-                ip addr flush dev $interface
-                ip link set $interface down
-                log "Настройки интерфейса $interface сброшены!"
-                ;;
-            2)
-                log "Сброс имени хоста..."
-                hostnamectl set-hostname "localhost"
-                exec bash
-                log "Имя хоста сброшено на 'localhost'."
-                ;;
-            3)
-                prompt "Введите имя пользователя для удаления: "
-                read -r username
-                if id "$username" &>/dev/null; then
-                    log "Удаление пользователя '$username'..."
-                    userdel -r "$username"
-                    log "Пользователь '$username' успешно удален!"
-                else
-                    warn "Пользователь '$username' не существует."
-                fi
-                ;;
-            4) break ;;
-            *) warn "Неверный выбор. Введите число от 1 до 4." ;;
-        esac
-    done
-}
-
-# Главное меню
+# Главное меню с использованием dialog
 main_menu() {
     while true; do
-        echo ""
-        info "Главное меню:"
-        echo "1) Настройка статического IP"
-        echo "2) Изменение имени хоста"
-        echo "3) Настройка маскарадинга"
-        echo "4) Проверка интернета"
-        echo "5) Проверка соединений"
-        echo "6) Создание пользователя"
-        echo "7) SSH подключение"
-        echo "8) Сброс настроек"
-        echo "9) Выход"
-        prompt "Выберите действие (1-9): "
-        read -r choice
+        choice=$(dialog --clear --backtitle "Главное меню" \
+            --title "Сетевые настройки" \
+            --menu "Выберите действие:" 15 50 8 \
+            1 "Настройка статического IP" \
+            2 "Изменение имени хоста" \
+            3 "Проверка соединений" \
+            4 "Создание/удаление пользователей" \
+            5 "Выход" \
+            2>&1 >/dev/tty)
 
         case $choice in
             1) configure_static_ip ;;
-            2) change_hostname ;;
-            3) configure_masquerade ;;
-            4) test_internet_connection ;;
-            5) show_network_info ;;
-            6) create_user_menu ;;
-            7) ssh_connection ;;
-            8) reset_settings_menu ;;
-            9) break ;;
-            *) warn "Неверный выбор. Введите число от 1 до 9." ;;
+            2) change_hostname_menu ;;
+            3) check_connections ;;
+            4) user_management_menu ;;
+            5) break ;;
+            *) warn "Неверный выбор. Возвращаемся в главное меню." ;;
         esac
     done
+}
+
+# Меню изменения имени хоста
+change_hostname_menu() {
+    while true; do
+        local hostnames=("isp.au-team.irpo" "hq-rtr.au-team.irpo" "br-rtr.au-team.irpo" "hq-srv.au-team.irpo" "hq-cli.au-team.irpo" "br-srv.au-team.irpo")
+        options=()
+        for i in "${!hostnames[@]}"; do
+            options+=($((i+1)) "${hostnames[$i]}")
+        done
+        options+=($((${#hostnames[@]}+1)) "Ввести своё имя")
+        options+=($((${#hostnames[@]}+2)) "Вернуться в главное меню")
+
+        choice=$(dialog --clear --backtitle "Изменение имени хоста" \
+            --title "Выбор имени хоста" \
+            --menu "Выберите вариант:" 15 50 8 "${options[@]}" \
+            2>&1 >/dev/tty)
+
+        if [[ "$choice" -eq $((${#hostnames[@]}+2)) ]]; then
+            break
+        elif [[ "$choice" -le ${#hostnames[@]} ]]; then
+            new_hostname=${hostnames[$((choice-1))]}
+        else
+            new_hostname=$(dialog --inputbox "Введите новое имя хоста:" 8 50 2>&1 >/dev/tty)
+        fi
+
+        if [[ -n "$new_hostname" ]]; then
+            log "Установка нового имени хоста: $new_hostname"
+            hostnamectl set-hostname "$new_hostname"
+            exec bash
+            log "Имя хоста изменено!"
+        fi
+    done
+}
+
+# Меню управления пользователями
+user_management_menu() {
+    while true; do
+        choice=$(dialog --clear --backtitle "Управление пользователями" \
+            --title "Создание/удаление пользователей" \
+            --menu "Выберите действие:" 15 50 8 \
+            1 "Создать нового пользователя" \
+            2 "Удалить существующего пользователя" \
+            3 "Просмотреть список пользователей" \
+            4 "Вернуться в главное меню" \
+            2>&1 >/dev/tty)
+
+        case $choice in
+            1)
+                username=$(dialog --inputbox "Введите имя нового пользователя:" 8 50 2>&1 >/dev/tty)
+                if id "$username" &>/dev/null; then
+                    dialog --msgbox "Пользователь '$username' уже существует." 8 50
+                else
+                    useradd -m -s /bin/bash "$username"
+                    passwd "$username"
+                    dialog --msgbox "Пользователь '$username' успешно создан!" 8 50
+                fi
+                ;;
+            2)
+                username=$(dialog --inputbox "Введите имя пользователя для удаления:" 8 50 2>&1 >/dev/tty)
+                if id "$username" &>/dev/null; then
+                    userdel -r "$username"
+                    dialog --msgbox "Пользователь '$username' успешно удален!" 8 50
+                else
+                    dialog --msgbox "Пользователь '$username' не существует." 8 50
+                fi
+                ;;
+            3)
+                users_list=$(cut -d: -f1 /etc/passwd | column)
+                dialog --msgbox "Список пользователей:\n$users_list" 20 50
+                ;;
+            4) break ;;
+            *) warn "Неверный выбор. Возвращаемся в главное меню." ;;
+        esac
+    done
+}
+
+# Проверка соединений
+check_connections() {
+    dialog --infobox "Проверка сетевых соединений..." 5 50
+    sleep 2
+
+    ip_output=$(ip -c a 2>&1)
+    ss_output=$(ss -tuln 2>&1)
+    nmap_output=""
+
+    if ! command -v nmap &>/dev/null; then
+        log "Установка nmap..."
+        if [[ -f /etc/os-release ]]; then
+            . /etc/os-release
+            case "$ID" in
+                ubuntu|debian)
+                    apt update
+                    apt install -y nmap
+                    ;;
+                centos|rhel|fedora)
+                    yum install -y nmap
+                    ;;
+            esac
+        fi
+    fi
+    nmap_output=$(nmap -sn 192.168.1.0/24 2>&1)
+
+    dialog --msgbox "Результаты проверки:\n\nIP адреса:\n$ip_output\n\nОткрытые порты:\n$ss_output\n\nСканирование сети:\n$nmap_output" 30 80
 }
 
 # Запуск скрипта
 check_root
+install_dialog
 main_menu
