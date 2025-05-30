@@ -7,12 +7,33 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Отключение NetworkManager
-echo "Отключение NetworkManager..."
+echo "Отключение ЕБУЧЕГО NetworkManager..."
 systemctl stop NetworkManager
 systemctl disable NetworkManager
 
-# Указываем интерфейс ens4
-interface="ens4"
+# Получение списка доступных интерфейсов
+echo "Доступные сетевые интерфейсы:"
+interfaces=($(ip link show | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2}' | sed 's/^ *//'))
+if [[ ${#interfaces[@]} -eq 0 ]]; then
+    echo "Ошибка: Нет доступных сетевых интерфейсов."
+    exit 1
+fi
+
+# Вывод списка интерфейсов для выбора
+for i in "${!interfaces[@]}"; do
+    echo "  $((i+1))) ${interfaces[$i]}"
+done
+
+# Запрос выбора интерфейса
+while true; do
+    read -p "Выберите номер интерфейса нахуй (1-${#interfaces[@]}): " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+        interface=${interfaces[$((choice-1))]}
+        break
+    else
+        echo "Неверный выбор. Пожалуйста, введите число от 1 до ${#interfaces[@]}."
+    fi
+done
 
 # Запрос сетевых настроек
 read -p "Введите IP адрес для $interface: " ip
