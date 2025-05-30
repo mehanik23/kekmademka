@@ -94,7 +94,6 @@ configure_static_ip() {
     for i in "${!interfaces[@]}"; do
         echo "  $((i+1))) ${interfaces[$i]}"
     done
-
     while true; do
         prompt "Выберите интерфейс для настройки (1-${#interfaces[@]}): "
         read -r choice
@@ -105,12 +104,10 @@ configure_static_ip() {
             error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
         fi
     done
-
     read -p "Введите IP адрес: " ip
     read -p "Введите маску (CIDR, например, 24): " mask
     read -p "Введите шлюз: " gateway
     read -p "Введите DNS сервер: " dns
-
     log "Применение настроек для интерфейса $selected_interface..."
     ip addr flush dev $selected_interface
     ip addr add ${ip}/${mask} dev $selected_interface
@@ -124,220 +121,205 @@ configure_static_ip() {
     log "Настройка завершена!"
 }
 
-# ... [Остальной код остается без изменений]
-
-# Сброс настроек
-reset_settings_menu() {
+# Изменение имени хоста
+change_hostname_menu() {
     while true; do
-        echo 
-        info Меню сброса настроек
-        echo 1) Сброс сетевых настроек
-        echo 2) Сброс имени хоста
-        echo 3) Удаление пользователей
-        echo 4) Вернуться в главное меню
-        prompt Выберите действие (1-4) 
+        local hostnames=("isp.au-team.irpo" "hq-rtr.au-team.irpo" "br-rtr.au-team.irpo" "hq-srv.au-team.irpo" "hq-cli.au-team.irpo" "br-srv.au-team.irpo")
+        echo ""
+        info "Доступные варианты имени хоста:"
+        for i in "${!hostnames[@]}"; do
+            echo "  $((i+1))) ${hostnames[$i]}"
+        done
+        echo "  $((${#hostnames[@]}+1))) Ввести своё имя"
+        echo "  $((${#hostnames[@]}+2))) Вернуться в главное меню"
+        prompt "Выберите вариант (1-$(( ${#hostnames[@]}+2 ))): "
         read -r choice
+        if [[ "$choice" -eq $((${#hostnames[@]}+2)) ]]; then
+            break
+        elif [[ "$choice" -le ${#hostnames[@]} ]]; then
+            new_hostname=${hostnames[$((choice-1))]}
+        else
+            read -p "Введите новое имя хоста: " new_hostname
+        fi
+        if [[ -n "$new_hostname" ]]; then
+            log "Установка нового имени хоста: $new_hostname"
+            hostnamectl set-hostname "$new_hostname"
+            exec bash
+            log "Имя хоста изменено!"
+        fi
+    done
+}
 
+# Меню создания/удаления пользователей
+create_user_menu() {
+    while true; do
+        echo ""
+        info "Меню управления пользователями:"
+        echo "1) Создать нового пользователя"
+        echo "2) Удалить существующего пользователя"
+        echo "3) Просмотреть список пользователей"
+        echo "4) Вернуться в главное меню"
+        prompt "Выберите действие (1-4): "
+        read -r choice
         case $choice in
             1)
-                get_interfaces
-                echo 
-                info Доступные сетевые интерфейсы
-                for i in ${!interfaces[@]}; do
-                    echo   $((i+1))) ${interfaces[$i]}
-                done
-                while true; do
-                    prompt Выберите интерфейс для сброса (1-${#interfaces[@]}) 
-                    read -r choice
-                    if [[ $choice =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#interfaces[@]} ]]; then
-                        interface=${interfaces[$((choice-1))]}
-                        break
-                    else
-                        error Неверный выбор. Введите число от 1 до ${#interfaces[@]}
-                    fi
-                done
-                log Сброс настроек для интерфейса $interface...
-                ip addr flush dev $interface
-                ip link set $interface down
-                log Настройки интерфейса $interface сброшены!
-                ;;
-            2)
-                log Сброс имени хоста...
-                hostnamectl set-hostname localhost
-                exec bash
-                log Имя хоста сброшено на 'localhost'.
-                ;;
-            3)
-                prompt Введите имя пользователя для удаления 
+                prompt "Введите имя нового пользователя: "
                 read -r username
-                if id $username &devnull; then
-                    log Удаление пользователя '$username'...
-                    userdel -r $username
-                    log Пользователь '$username' успешно удален!
+                if id "$username" &>/dev/null; then
+                    warn "Пользователь '$username' уже существует."
                 else
-                    warn Пользователь '$username' не существует.
+                    log "Создание пользователя '$username'..."
+                    useradd -m -s /bin/bash "$username"
+                    passwd "$username"
+                    log "Пользователь '$username' успешно создан!"
                 fi
                 ;;
+            2)
+                prompt "Введите имя пользователя для удаления: "
+                read -r username
+                if id "$username" &>/dev/null; then
+                    log "Удаление пользователя '$username'..."
+                    userdel -r "$username"
+                    log "Пользователь '$username' успешно удален!"
+                else
+                    warn "Пользователь '$username' не существует."
+                fi
+                ;;
+            3)
+                log "Список пользователей:"
+                cut -d: -f1 /etc/passwd
+                ;;
             4) break ;;
-            ) warn Неверный выбор. Введите число от 1 до 4. ;;
+            *) warn "Неверный выбор. Введите число от 1 до 4." ;;
         esac
     done
 }
 
 # SSH подключение
 ssh_connection() {
-    prompt Введите имя пользователя для SSH 
+    prompt "Введите имя пользователя для SSH: "
     read -r ssh_user
-    prompt Введите IP адрес для SSH 
+    prompt "Введите IP адрес для SSH: "
     read -r ssh_ip
-    if [[ $ssh_ip =~ ^[0-9]+.[0-9]+.[0-9]+.[0-9]+$ ]]; then
-        log Подключение к $ssh_user@$ssh_ip через SSH...
-        ssh $ssh_user@$ssh_ip
+    if [[ "$ssh_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        log "Подключение к $ssh_user@$ssh_ip через SSH..."
+        ssh "$ssh_user@$ssh_ip"
     else
-        error Неверный формат IP адреса.
+        error "Неверный формат IP адреса."
     fi
 }
 
-# Меню созданияудаления пользователей
-create_user_menu() {
+# Сброс настроек
+reset_settings_menu() {
     while true; do
-        echo 
-        info Меню управления пользователями
-        echo 1) Создать нового пользователя
-        echo 2) Удалить существующего пользователя
-        echo 3) Просмотреть список пользователей
-        echo 4) Вернуться в главное меню
-        prompt Выберите действие (1-4) 
+        echo ""
+        info "Меню сброса настроек:"
+        echo "1) Сброс сетевых настроек"
+        echo "2) Сброс имени хоста"
+        echo "3) Удаление пользователей"
+        echo "4) Вернуться в главное меню"
+        prompt "Выберите действие (1-4): "
         read -r choice
-
         case $choice in
             1)
-                prompt Введите имя нового пользователя 
-                read -r username
-                if id $username &devnull; then
-                    warn Пользователь '$username' уже существует.
-                else
-                    log Создание пользователя '$username'...
-                    useradd -m -s binbash $username
-                    passwd $username
-                    log Пользователь '$username' успешно создан!
-                fi
+                get_interfaces
+                echo ""
+                info "Доступные сетевые интерфейсы:"
+                for i in "${!interfaces[@]}"; do
+                    echo "  $((i+1))) ${interfaces[$i]}"
+                done
+                while true; do
+                    prompt "Выберите интерфейс для сброса (1-${#interfaces[@]}): "
+                    read -r choice
+                    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+                        interface=${interfaces[$((choice-1))]}
+                        break
+                    else
+                        error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
+                    fi
+                done
+                log "Сброс настроек для интерфейса $interface..."
+                ip addr flush dev $interface
+                ip link set $interface down
+                log "Настройки интерфейса $interface сброшены!"
                 ;;
             2)
-                prompt Введите имя пользователя для удаления 
-                read -r username
-                if id $username &devnull; then
-                    log Удаление пользователя '$username'...
-                    userdel -r $username
-                    log Пользователь '$username' успешно удален!
-                else
-                    warn Пользователь '$username' не существует.
-                fi
+                log "Сброс имени хоста..."
+                hostnamectl set-hostname "localhost"
+                exec bash
+                log "Имя хоста сброшено на 'localhost'."
                 ;;
             3)
-                log Список пользователей
-                cut -d -f1 etcpasswd
+                prompt "Введите имя пользователя для удаления: "
+                read -r username
+                if id "$username" &>/dev/null; then
+                    log "Удаление пользователя '$username'..."
+                    userdel -r "$username"
+                    log "Пользователь '$username' успешно удален!"
+                else
+                    warn "Пользователь '$username' не существует."
+                fi
                 ;;
             4) break ;;
-            ) warn Неверный выбор. Введите число от 1 до 4. ;;
+            *) warn "Неверный выбор. Введите число от 1 до 4." ;;
         esac
     done
 }
 
-# Изменение имени хоста
-change_hostname_menu() {
-    while true; do
-        local hostnames=(isp.au-team.irpo hq-rtr.au-team.irpo br-rtr.au-team.irpo hq-srv.au-team.irpo hq-cli.au-team.irpo br-srv.au-team.irpo)
-        echo 
-        info Доступные варианты имени хоста
-        for i in ${!hostnames[@]}; do
-            echo   $((i+1))) ${hostnames[$i]}
-        done
-        echo   $((${#hostnames[@]}+1))) Ввести своё имя
-        echo   $((${#hostnames[@]}+2))) Вернуться в главное меню
-
-        prompt Выберите вариант (1-$(( ${#hostnames[@]}+2 ))) 
-        read -r choice
-
-        if [[ $choice -eq $((${#hostnames[@]}+2)) ]]; then
-            break
-        elif [[ $choice -le ${#hostnames[@]} ]]; then
-            new_hostname=${hostnames[$((choice-1))]}
-        else
-            read -p Введите новое имя хоста  new_hostname
-        fi
-
-        if [[ -n $new_hostname ]]; then
-            log Установка нового имени хоста $new_hostname
-            hostnamectl set-hostname $new_hostname
-            exec bash
-            log Имя хоста изменено!
-        fi
-    done
-}
-
- Настройка маскарадинга
+# Настройка маскарадинга
 configure_masquerade() {
     get_interfaces
-    echo 
-    info Доступные сетевые интерфейсы
-    for i in ${!interfaces[@]}; do
-        echo   $((i+1))) ${interfaces[$i]}
+    echo ""
+    info "Доступные сетевые интерфейсы:"
+    for i in "${!interfaces[@]}"; do
+        echo "  $((i+1))) ${interfaces[$i]}"
     done
-
     while true; do
-        prompt Выберите внешний интерфейс для маскарадинга (1-${#interfaces[@]}) 
+        prompt "Выберите внешний интерфейс для маскарадинга (1-${#interfaces[@]}): "
         read -r choice
-        if [[ $choice =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#interfaces[@]} ]]; then
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
             external_interface=${interfaces[$((choice-1))]}
             break
         else
-            error Неверный выбор. Введите число от 1 до ${#interfaces[@]}
+            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
         fi
     done
-
     while true; do
-        prompt Выберите внутренний интерфейс для локальной сети (1-${#interfaces[@]}) 
+        prompt "Выберите внутренний интерфейс для локальной сети (1-${#interfaces[@]}): "
         read -r choice
-        if [[ $choice =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#interfaces[@]} ]]; then
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
             internal_interface=${interfaces[$((choice-1))]}
             break
         else
-            error Неверный выбор. Введите число от 1 до ${#interfaces[@]}
+            error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
         fi
     done
-
-    log Настройка IP-форвардинга и маскарадинга...
-
+    log "Настройка IP-форвардинга и маскарадинга..."
     # Включение IP форвардинга
-    echo net.ipv4.ip_forward = 1  etcsysctl.d99-ipforward.conf
-    sysctl -p etcsysctl.d99-ipforward.conf
-
+    echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-ipforward.conf
+    sysctl -p /etc/sysctl.d/99-ipforward.conf
     # Очистка старых правил
     iptables -F
     iptables -t nat -F
-
     # Настройка правил маскарадинга
     iptables -t nat -A POSTROUTING -o $external_interface -j MASQUERADE
     iptables -A FORWARD -i $external_interface -o $internal_interface -m state --state RELATED,ESTABLISHED -j ACCEPT
     iptables -A FORWARD -i $internal_interface -o $external_interface -j ACCEPT
-
-    # Сохранение правил через netfilter-persistent
-    log Установка и сохранение правил iptables...
+    # Установка и сохранение правил iptables
+    log "Установка и сохранение правил iptables..."
     apt update
     DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
     netfilter-persistent save
-
-    log Маскарадинг настроен и сохранен!
+    log "Маскарадинг настроен и сохранён!"
 }
 
 # Проверка интернета
 test_internet_connection() {
-    log Проверка подключения к интернету через ping 8.8.8.8...
-    if ping -c 3 8.8.8.8 &devnull; then
-        log ✓ Подключение к интернету работает
+    log "Проверка подключения к интернету через ping 8.8.8.8..."
+    if ping -c 3 8.8.8.8 &>/dev/null; then
+        log "✓ Подключение к интернету работает"
     else
-        warn ✗ Нет подключения к интернету
+        warn "✗ Нет подключения к интернету"
     fi
 }
 
@@ -350,25 +332,22 @@ main_menu() {
         echo "2) Изменение имени хоста"
         echo "3) Настройка маскарадинга"
         echo "4) Проверка интернета"
-        echo "5) Проверка соединений"
-        echo "6) Управление пользователями"
-        echo "7) SSH подключение"
-        echo "8) Сброс настроек"
-        echo "9) Выход"
-        prompt "Выберите действие (1-9): "
+        echo "5) Управление пользователями"
+        echo "6) SSH подключение"
+        echo "7) Сброс настроек"
+        echo "8) Выход"
+        prompt "Выберите действие (1-8): "
         read -r choice
-
         case $choice in
             1) configure_static_ip ;;
             2) change_hostname_menu ;;
             3) configure_masquerade ;;
             4) test_internet_connection ;;
-            5) check_connections_menu ;;
-            6) create_user_menu ;;
-            7) ssh_connection ;;
-            8) reset_settings_menu ;;
-            9) break ;;
-            *) warn "Неверный выбор. Введите число от 1 до 9." ;;
+            5) create_user_menu ;;
+            6) ssh_connection ;;
+            7) reset_settings_menu ;;
+            8) break ;;
+            *) warn "Неверный выбор. Введите число от 1 до 8." ;;
         esac
     done
 }
