@@ -7,7 +7,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Отключение NetworkManager
-echo "Отключение ЕБУЧЕГО NetworkManager..."
+echo "Отключение NetworkManager..."
 systemctl stop NetworkManager
 systemctl disable NetworkManager
 
@@ -26,7 +26,7 @@ done
 
 # Запрос выбора интерфейса
 while true; do
-    read -p "Выберите номер интерфейса нахуй (1-${#interfaces[@]}): " choice
+    read -p "Выберите номер интерфейса (1-${#interfaces[@]}): " choice
     if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
         interface=${interfaces[$((choice-1))]}
         break
@@ -51,7 +51,38 @@ echo "nameserver $dns" > /etc/resolv.conf
 
 # Проверка подключения
 echo "Проверка подключения через ping 8.8.8.8..."
-ping -c 3 8.8.8.8
+ping -c 3 8.8.8.8 || echo "Подключение к интернету недоступно."
+
+# Настройка IP-форвардинга и маскарадинга
+echo "Настройка IP-форвардинга и маскарадинга..."
+
+# Включение IP-форвардинга
+echo "Включение IP-форвардинга в /etc/sysctl.conf..."
+if grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+    echo "IP-форвардинг уже включен."
+else
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+    sysctl -p
+    echo "IP-форвардинг включен."
+fi
+
+# Настройка маскарадинга
+echo "Настройка маскарадинга для интерфейса $interface..."
+iptables -t nat -A POSTROUTING -o $interface -j MASQUERADE
+echo "Маскарадинг настроен."
+
+# Установка iptables-persistent
+echo "Установка iptables-persistent..."
+apt update
+DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
+echo "iptables-persistent установлен."
+
+# Сохранение правил iptables
+echo "Сохранение правил iptables..."
+netfilter-persistent save
+echo "Правила iptables сохранены."
+
+echo "Настройка завершена!"
 
 
 
