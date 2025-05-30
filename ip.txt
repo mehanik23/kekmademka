@@ -1,7 +1,4 @@
 sudo systemctl stop NetworkManager; sudo systemctl disable NetworkManager; read -p "Введите IP: " ip; read -p "Маска (например, 24): " mask; read -p "Шлюз: " gw; read -p "DNS: " dns; interface=$(ip route | grep default | awk '{print $5}'); sudo ip addr flush dev $interface; sudo ip addr add $ip/$mask dev $interface; sudo ip link set $interface up; sudo ip route add default via $gw; echo "nameserver $dns" | sudo tee /etc/resolv.conf > /dev/null; echo "Настройка завершена!"
 
-sudo systemctl enable NetworkManager; sudo systemctl start NetworkManager; interface=$(ip route | grep default | awk '{print $5}'); sudo ip addr flush dev $interface; sudo ip route flush dev $interface; echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf > /dev/null; echo "NetworkManager включён, все настройки сети удалены!"
-
-sudo ip addr flush dev $(ip route | grep default | awk '{print $5}'); sudo ip route flush dev $(ip route | grep default | awk '{print $5}'); echo "" | sudo tee /etc/resolv.conf; sudo systemctl enable NetworkManager; sudo systemctl start NetworkManager; echo "Настройки сети сброшены!"
-
 sudo ip addr flush dev ens3; sudo ip route flush dev ens3; echo "" | sudo tee /etc/resolv.conf; sudo systemctl enable NetworkManager; sudo systemctl start NetworkManager; echo "Настройки сети для ens3 сброшены!"
+
