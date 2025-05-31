@@ -212,7 +212,69 @@ if [ ${#vlan_interfaces[@]} -gt 0 ]; then
     use_vlan=$(echo $use_vlan | tr '[:upper:]' '[:lower:]')
     
     if [[ $use_vlan == "да" ]] || [[ $use_vlan == "yes" ]]; then
-        selected_interfaces=("${vlan_interfaces[@]}")
+        print_color $YELLOW "\nВыберите VLAN интерфейсы для настройки DHCP:"
+        selected_interfaces=()
+        
+        # Показываем VLAN интерфейсы для выбора
+        for i in "${!vlan_interfaces[@]}"; do
+            ip=$(ip -4 addr show ${vlan_interfaces[$i]} | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
+            echo "$((i+1)). ${vlan_interfaces[$i]} (IP: $ip)"
+        done
+        
+        while true; do
+            read -p "Выберите номер VLAN интерфейса (или 'готово' для завершения): " choice
+            if [[ $choice == "готово" ]] || [[ $choice == "done" ]]; then
+                break
+            elif [[ $choice =~ ^[0-9]+$ ]] && [ $choice -ge 1 ] && [ $choice -le ${#vlan_interfaces[@]} ]; then
+                selected_interfaces+=("${vlan_interfaces[$((choice-1))]}")
+                print_color $GREEN "Добавлен: ${vlan_interfaces[$((choice-1))]}"
+            else
+                print_color $RED "Неверный выбор!"
+            fi
+        done
+        
+        # Если выбрали VLAN интерфейсы, спросить про дополнительные обычные интерфейсы
+        if [ ${#selected_interfaces[@]} -gt 0 ]; then
+            read -p "Хотите добавить обычные (не VLAN) интерфейсы? (да/нет): " add_regular
+            if [[ $add_regular == "да" ]] || [[ $add_regular == "yes" ]]; then
+                print_color $YELLOW "\nВыберите дополнительные интерфейсы:"
+                # Получаем обычные интерфейсы (исключая уже выбранные VLAN)
+                all_interfaces=($(get_interfaces))
+                available_interfaces=()
+                
+                # Фильтруем доступные интерфейсы
+                for iface in "${all_interfaces[@]}"; do
+                    if [[ ! ${iface} =~ ^vlan[0-9]+ ]] && [[ ! " ${selected_interfaces[@]} " =~ " ${iface} " ]]; then
+                        available_interfaces+=("$iface")
+                    fi
+                done
+                
+                # Показываем только доступные интерфейсы
+                for i in "${!available_interfaces[@]}"; do
+                    ip=$(ip -4 addr show ${available_interfaces[$i]} | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
+                    echo "$((i+1)). ${available_interfaces[$i]} (IP: $ip)"
+                done
+                
+                while true; do
+                    read -p "Выберите номер интерфейса (или 'готово' для завершения): " choice
+                    if [[ $choice == "готово" ]] || [[ $choice == "done" ]]; then
+                        break
+                    elif [[ $choice =~ ^[0-9]+$ ]] && [ $choice -ge 1 ] && [ $choice -le ${#available_interfaces[@]} ]; then
+                        selected_interfaces+=("${available_interfaces[$((choice-1))]}")
+                        print_color $GREEN "Добавлен: ${available_interfaces[$((choice-1))]}"
+                    else
+                        print_color $RED "Неверный выбор!"
+                    fi
+                done
+            fi
+        fi
+        
+        # Если не выбрали ни одного интерфейса
+        if [ ${#selected_interfaces[@]} -eq 0 ]; then
+            print_color $YELLOW "Вы не выбрали ни одного интерфейса."
+            print_color $YELLOW "\nВыберите интерфейсы для DHCP сервиса из всех доступных:"
+            selected_interfaces=($(select_interfaces))
+        fi
     else
         print_color $YELLOW "\nВыберите интерфейсы для DHCP сервиса:"
         selected_interfaces=($(select_interfaces))
@@ -220,6 +282,14 @@ if [ ${#vlan_interfaces[@]} -gt 0 ]; then
 else
     print_color $YELLOW "\nВыберите интерфейсы для DHCP сервиса:"
     selected_interfaces=($(select_interfaces))
+fi
+
+# Показать выбранные интерфейсы
+if [ ${#selected_interfaces[@]} -gt 0 ]; then
+    print_color $GREEN "\nВыбранные интерфейсы для DHCP:"
+    for iface in "${selected_interfaces[@]}"; do
+        echo "  - $iface"
+    done
 fi
 
 if [ ${#selected_interfaces[@]} -eq 0 ]; then
