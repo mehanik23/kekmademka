@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Скрипт установки DHCP сервера для Debian 10
-# Используется dnsmasq в качестве DHCP сервера
+# Используется ISC DHCP Server
 
 set -e
 
@@ -64,10 +64,43 @@ check_ip_conflict() {
 # Функция получения сетевых интерфейсов
 get_interfaces() {
     local interfaces=()
+    # Получаем все интерфейсы, включая обычные и VLAN
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v lo); do
         interfaces+=("$iface")
     done
     echo "${interfaces[@]}"
+}
+
+# Функция получения VLAN интерфейсов
+get_vlan_interfaces() {
+    local vlans=()
+    # Ищем VLAN интерфейсы (формат vlanXXX)
+    for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -E '^vlan[0-9]+'); do
+        vlans+=("$iface")
+    done
+    echo "${vlans[@]}"
+}
+
+# Функция вычисления сетевой маски из CIDR
+cidr_to_netmask() {
+    local cidr=$1
+    local value=$(( 0xffffffff ^ ((1 << (32 - $cidr)) - 1) ))
+    echo "$(( (value >> 24) & 0xff )).$(( (value >> 16) & 0xff )).$(( (value >> 8) & 0xff )).$(( value & 0xff ))"
+}
+
+# Функция вычисления сети из IP и CIDR
+get_network() {
+    local ip=$1
+    local cidr=$2
+    local IFS='.'
+    read -r i1 i2 i3 i4 <<< "$ip"
+    local mask=$(( 0xffffffff ^ ((1 << (32 - $cidr)) - 1) ))
+    local m1=$(( (mask >> 24) & 0xff ))
+    local m2=$(( (mask >> 16) & 0xff ))
+    local m3=$(( (mask >> 8) & 0xff ))
+    local m4=$(( mask & 0xff ))
+    
+    echo "$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).$((i4 & m4))"
 }
 
 # Функция выбора интерфейсов
@@ -77,7 +110,8 @@ select_interfaces() {
     
     print_color $GREEN "\nДоступные сетевые интерфейсы:"
     for i in "${!interfaces[@]}"; do
-        echo "$((i+1)). ${interfaces[$i]}"
+        local ip=$(ip -4 addr show ${interfaces[$i]} | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
+        echo "$((i+1)). ${interfaces[$i]} (IP: $ip)"
     done
     
     while true; do
@@ -98,7 +132,7 @@ select_interfaces() {
 # Основной скрипт начинается здесь
 clear
 print_color $GREEN "=== Скрипт установки DHCP сервера для Debian 10 ==="
-print_color $GREEN "=== Используется dnsmasq ==="
+print_color $GREEN "=== Используется ISC DHCP Server ==="
 echo
 
 # Проверка прав root
@@ -120,38 +154,72 @@ else
     apt-get update -y
 fi
 
-print_color $YELLOW "Установка dnsmasq..."
-apt-get install -y dnsmasq
+print_color $YELLOW "Установка ISC DHCP Server..."
+apt-get install -y isc-dhcp-server
 
-# Временно остановить службу dnsmasq
-systemctl stop dnsmasq
+# Временно остановить службу
+systemctl stop isc-dhcp-server
 
 # Резервное копирование оригинальной конфигурации
-if [ -f /etc/dnsmasq.conf ]; then
-    cp /etc/dnsmasq.conf /etc/dnsmasq.conf.backup.$(date +%Y%m%d_%H%M%S)
+if [ -f /etc/dhcp/dhcpd.conf ]; then
+    cp /etc/dhcp/dhcpd.conf /etc/dhcp/dhcpd.conf.backup.$(date +%Y%m%d_%H%M%S)
     print_color $GREEN "Оригинальная конфигурация сохранена"
 fi
 
 # Начало настройки
 print_color $GREEN "\n=== Настройка DHCP ==="
 
-# Вопрос об использовании VLAN
-read -p "Используете ли вы VLAN интерфейсы? (да/нет): " use_vlan
-use_vlan=$(echo $use_vlan | tr '[:upper:]' '[:lower:]')
+# Выбор интерфейса с интернетом
+print_color $YELLOW "\nСначала выберите интерфейс с доступом в интернет (для указания маршрута по умолчанию):"
+interfaces_array=($(get_interfaces))
+for i in "${!interfaces_array[@]}"; do
+    local ip=$(ip -4 addr show ${interfaces_array[$i]} | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
+    echo "$((i+1)). ${interfaces_array[$i]} (IP: $ip)"
+done
 
-# Выбор интерфейсов
-if [[ $use_vlan == "да" ]] || [[ $use_vlan == "yes" ]]; then
-    print_color $YELLOW "\nОбнаруженные VLAN интерфейсы:"
-    vlan_interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^vlan[0-9]+' || true)
-    if [[ -z $vlan_interfaces ]]; then
-        print_color $RED "VLAN интерфейсы не найдены!"
+while true; do
+    read -p "Выберите интерфейс с интернетом (1-${#interfaces_array[@]}): " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ $choice -ge 1 ] && [ $choice -le ${#interfaces_array[@]} ]; then
+        internet_interface=${interfaces_array[$((choice-1))]}
+        # Получаем шлюз для этого интерфейса
+        default_gateway=$(ip route | grep "default via" | grep "$internet_interface" | awk '{print $3}' | head -1)
+        if [[ -z $default_gateway ]]; then
+            print_color $YELLOW "Не найден шлюз по умолчанию для $internet_interface"
+            read -p "Введите шлюз по умолчанию вручную: " default_gateway
+            while ! validate_ip "$default_gateway"; do
+                print_color $RED "Неверный формат IP!"
+                read -p "Введите шлюз по умолчанию: " default_gateway
+            done
+        fi
+        print_color $GREEN "Выбран интерфейс с интернетом: $internet_interface (шлюз: $default_gateway)"
+        break
     else
-        echo "$vlan_interfaces"
+        print_color $RED "Неверный выбор!"
     fi
-fi
+done
 
-print_color $YELLOW "\nВыберите интерфейсы для DHCP сервиса:"
-selected_interfaces=($(select_interfaces))
+# Проверка наличия VLAN интерфейсов
+vlan_interfaces=($(get_vlan_interfaces))
+if [ ${#vlan_interfaces[@]} -gt 0 ]; then
+    print_color $YELLOW "\nОбнаружены VLAN интерфейсы:"
+    for vlan in "${vlan_interfaces[@]}"; do
+        local ip=$(ip -4 addr show $vlan | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
+        echo "  - $vlan (IP: $ip)"
+    done
+    
+    read -p "Хотите настроить DHCP на VLAN интерфейсах? (да/нет): " use_vlan
+    use_vlan=$(echo $use_vlan | tr '[:upper:]' '[:lower:]')
+    
+    if [[ $use_vlan == "да" ]] || [[ $use_vlan == "yes" ]]; then
+        selected_interfaces=("${vlan_interfaces[@]}")
+    else
+        print_color $YELLOW "\nВыберите интерфейсы для DHCP сервиса:"
+        selected_interfaces=($(select_interfaces))
+    fi
+else
+    print_color $YELLOW "\nВыберите интерфейсы для DHCP сервиса:"
+    selected_interfaces=($(select_interfaces))
+fi
 
 if [ ${#selected_interfaces[@]} -eq 0 ]; then
     print_color $RED "Интерфейсы не выбраны! Выход."
@@ -159,114 +227,229 @@ if [ ${#selected_interfaces[@]} -eq 0 ]; then
 fi
 
 # Создание новой конфигурации
-cat > /etc/dnsmasq.conf << EOF
-# Конфигурация Dnsmasq для DHCP сервера
+cat > /etc/dhcp/dhcpd.conf << EOF
+# Конфигурация ISC DHCP Server
 # Создано скриптом dhcp.sh $(date)
 
-# Отключить функцию DNS
-port=0
+# Глобальные параметры
+authoritative;
+log-facility local7;
 
-# Включить логирование DHCP
-log-dhcp
+# Время аренды по умолчанию
+default-lease-time 43200;  # 12 часов
+max-lease-time 86400;      # 24 часа
 
-# Авторитетный режим DHCP
-dhcp-authoritative
+# Глобальные DNS серверы (могут быть переопределены для каждой подсети)
+option domain-name-servers 8.8.8.8, 8.8.4.4;
 
 EOF
 
 # Настройка каждого интерфейса
+declare -A interface_configs
 for iface in "${selected_interfaces[@]}"; do
     print_color $GREEN "\n=== Настройка интерфейса: $iface ==="
     
     # Получить текущий IP интерфейса, если есть
-    current_ip=$(ip -4 addr show $iface | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || true)
+    current_ip=$(ip -4 addr show $iface | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | head -1 || true)
     if [[ -n $current_ip ]]; then
-        print_color $YELLOW "Текущий IP на $iface: $current_ip"
+        print_color $YELLOW "Текущая настройка на $iface: $current_ip"
+        ip_only=$(echo $current_ip | cut -d'/' -f1)
+        cidr=$(echo $current_ip | cut -d'/' -f2)
+        
+        read -p "Использовать текущие настройки для DHCP? (да/нет): " use_current
+        if [[ $use_current == "да" ]] || [[ $use_current == "yes" ]]; then
+            # Вычисляем сеть из текущих настроек
+            network=$(get_network $ip_only $cidr)
+            netmask=$(cidr_to_netmask $cidr)
+            gateway=$ip_only
+            
+            # Предлагаем диапазон по умолчанию
+            IFS='.' read -r n1 n2 n3 n4 <<< "$ip_only"
+            suggested_start="$n1.$n2.$n3.100"
+            suggested_end="$n1.$n2.$n3.200"
+            
+            print_color $YELLOW "Предлагаемый диапазон: $suggested_start - $suggested_end"
+            read -p "Использовать предложенный диапазон? (да/нет): " use_suggested
+            
+            if [[ $use_suggested == "да" ]] || [[ $use_suggested == "yes" ]]; then
+                range_start=$suggested_start
+                range_end=$suggested_end
+            else
+                # Запрос диапазона вручную
+                while true; do
+                    read -p "Введите начальный IP диапазона DHCP: " range_start
+                    if validate_ip $range_start; then
+                        break
+                    else
+                        print_color $RED "Неверный IP адрес!"
+                    fi
+                done
+                
+                while true; do
+                    read -p "Введите конечный IP диапазона DHCP: " range_end
+                    if validate_ip $range_end; then
+                        break
+                    else
+                        print_color $RED "Неверный IP адрес!"
+                    fi
+                done
+            fi
+        else
+            # Ручной ввод всех параметров
+            while true; do
+                read -p "Введите сеть (например, 192.168.100.0): " network
+                if validate_ip $network; then
+                    break
+                else
+                    print_color $RED "Неверный IP адрес!"
+                fi
+            done
+            
+            while true; do
+                read -p "Введите маску сети (например, 255.255.255.0): " netmask
+                if validate_ip $netmask; then
+                    break
+                else
+                    print_color $RED "Неверный формат маски!"
+                fi
+            done
+            
+            while true; do
+                read -p "Введите шлюз для этой подсети: " gateway
+                if validate_ip $gateway; then
+                    break
+                else
+                    print_color $RED "Неверный IP адрес!"
+                fi
+            done
+            
+            while true; do
+                read -p "Введите начальный IP диапазона DHCP: " range_start
+                if validate_ip $range_start; then
+                    break
+                else
+                    print_color $RED "Неверный IP адрес!"
+                fi
+            done
+            
+            while true; do
+                read -p "Введите конечный IP диапазона DHCP: " range_end
+                if validate_ip $range_end; then
+                    break
+                else
+                    print_color $RED "Неверный IP адрес!"
+                fi
+            done
+        fi
+    else
+        # Интерфейс без IP - полный ручной ввод
+        print_color $YELLOW "Интерфейс $iface не имеет IP адреса. Необходима ручная настройка."
+        
+        while true; do
+            read -p "Введите сеть (например, 192.168.100.0): " network
+            if validate_ip $network; then
+                break
+            else
+                print_color $RED "Неверный IP адрес!"
+            fi
+        done
+        
+        while true; do
+            read -p "Введите маску сети (например, 255.255.255.0): " netmask
+            if validate_ip $netmask; then
+                break
+            else
+                print_color $RED "Неверный формат маски!"
+            fi
+        done
+        
+        while true; do
+            read -p "Введите шлюз для этой подсети: " gateway
+            if validate_ip $gateway; then
+                break
+            else
+                print_color $RED "Неверный IP адрес!"
+            fi
+        done
+        
+        while true; do
+            read -p "Введите начальный IP диапазона DHCP: " range_start
+            if validate_ip $range_start; then
+                break
+            else
+                print_color $RED "Неверный IP адрес!"
+            fi
+        done
+        
+        while true; do
+            read -p "Введите конечный IP диапазона DHCP: " range_end
+            if validate_ip $range_end; then
+                break
+            else
+                print_color $RED "Неверный IP адрес!"
+            fi
+        done
     fi
     
-    # Запрос диапазона DHCP
-    while true; do
-        read -p "Введите начальный IP диапазона DHCP для $iface: " range_start
-        if validate_ip $range_start; then
-            if check_ip_conflict $range_start; then
-                print_color $YELLOW "Внимание: IP $range_start уже используется!"
-                read -p "Продолжить всё равно? (да/нет): " cont
-                if [[ $cont == "да" ]] || [[ $cont == "yes" ]]; then
-                    break
-                fi
-            else
-                break
-            fi
-        else
-            print_color $RED "Неверный IP адрес!"
-        fi
-    done
-    
-    while true; do
-        read -p "Введите конечный IP диапазона DHCP для $iface: " range_end
-        if validate_ip $range_end; then
-            if check_ip_conflict $range_end; then
-                print_color $YELLOW "Внимание: IP $range_end уже используется!"
-                read -p "Продолжить всё равно? (да/нет): " cont
-                if [[ $cont == "да" ]] || [[ $cont == "yes" ]]; then
-                    break
-                fi
-            else
-                break
-            fi
-        else
-            print_color $RED "Неверный IP адрес!"
-        fi
-    done
-    
-    # Запрос шлюза
-    while true; do
-        read -p "Введите IP адрес шлюза для $iface: " gateway
-        if validate_ip $gateway; then
-            break
-        else
-            print_color $RED "Неверный IP адрес!"
-        fi
-    done
+    # Проверка конфликтов
+    if check_ip_conflict $range_start; then
+        print_color $YELLOW "Внимание: IP $range_start уже используется!"
+    fi
+    if check_ip_conflict $range_end; then
+        print_color $YELLOW "Внимание: IP $range_end уже используется!"
+    fi
     
     # Запрос DNS серверов
     dns_servers=""
-    while true; do
-        read -p "Введите IP адрес DNS сервера (или 'готово' для завершения): " dns
-        if [[ $dns == "готово" ]] || [[ $dns == "done" ]]; then
-            break
-        elif validate_ip $dns; then
-            if [[ -z $dns_servers ]]; then
-                dns_servers=$dns
+    print_color $YELLOW "Настройка DNS серверов для подсети $network"
+    read -p "Использовать DNS серверы по умолчанию (8.8.8.8, 8.8.4.4)? (да/нет): " use_default_dns
+    
+    if [[ $use_default_dns != "да" ]] && [[ $use_default_dns != "yes" ]]; then
+        while true; do
+            read -p "Введите DNS сервер (или 'готово' для завершения): " dns
+            if [[ $dns == "готово" ]] || [[ $dns == "done" ]]; then
+                break
+            elif validate_ip $dns; then
+                if [[ -z $dns_servers ]]; then
+                    dns_servers=$dns
+                else
+                    dns_servers="$dns_servers, $dns"
+                fi
+                print_color $GREEN "Добавлен DNS: $dns"
             else
-                dns_servers="$dns_servers,$dns"
+                print_color $RED "Неверный IP адрес!"
             fi
-            print_color $GREEN "Добавлен DNS: $dns"
-        else
-            print_color $RED "Неверный IP адрес!"
-        fi
-    done
+        done
+    fi
     
     # Запрос доменного имени
     read -p "Введите доменное имя (необязательно, нажмите Enter для пропуска): " domain_name
     
-    # Запись конфигурации интерфейса
-    echo "" >> /etc/dnsmasq.conf
-    echo "# Конфигурация для интерфейса $iface" >> /etc/dnsmasq.conf
-    echo "interface=$iface" >> /etc/dnsmasq.conf
-    echo "dhcp-range=$iface,$range_start,$range_end,12h" >> /etc/dnsmasq.conf
+    # Запись конфигурации подсети
+    echo "" >> /etc/dhcp/dhcpd.conf
+    echo "# Конфигурация для интерфейса $iface" >> /etc/dhcp/dhcpd.conf
+    echo "subnet $network netmask $netmask {" >> /etc/dhcp/dhcpd.conf
+    echo "    range $range_start $range_end;" >> /etc/dhcp/dhcpd.conf
+    echo "    option routers $gateway;" >> /etc/dhcp/dhcpd.conf
     
-    if [[ -n $gateway ]]; then
-        echo "dhcp-option=$iface,3,$gateway" >> /etc/dnsmasq.conf
+    # Если это не интерфейс с интернетом и указан глобальный шлюз
+    if [[ $iface != $internet_interface ]] && [[ -n $default_gateway ]]; then
+        echo "    # Маршрут по умолчанию через интерфейс с интернетом" >> /etc/dhcp/dhcpd.conf
+        echo "    option routers $gateway, $default_gateway;" >> /etc/dhcp/dhcpd.conf
     fi
     
     if [[ -n $dns_servers ]]; then
-        echo "dhcp-option=$iface,6,$dns_servers" >> /etc/dnsmasq.conf
+        echo "    option domain-name-servers $dns_servers;" >> /etc/dhcp/dhcpd.conf
     fi
     
     if [[ -n $domain_name ]]; then
-        echo "dhcp-option=$iface,15,$domain_name" >> /etc/dnsmasq.conf
+        echo "    option domain-name \"$domain_name\";" >> /etc/dhcp/dhcpd.conf
     fi
+    
+    echo "}" >> /etc/dhcp/dhcpd.conf
+    
+    # Сохраняем интерфейс для конфигурации сервиса
+    interface_configs[$iface]=1
 done
 
 # Запрос статических резерваций IP
@@ -275,8 +458,8 @@ read -p "Хотите добавить статические резервиро
 add_static=$(echo $add_static | tr '[:upper:]' '[:lower:]')
 
 if [[ $add_static == "да" ]] || [[ $add_static == "yes" ]]; then
-    echo "" >> /etc/dnsmasq.conf
-    echo "# Статические резервирования IP" >> /etc/dnsmasq.conf
+    echo "" >> /etc/dhcp/dhcpd.conf
+    echo "# Статические резервирования IP" >> /etc/dhcp/dhcpd.conf
     
     while true; do
         read -p "\nДобавить статическое резервирование? (да/нет): " add_more
@@ -314,19 +497,41 @@ if [[ $add_static == "да" ]] || [[ $add_static == "yes" ]]; then
             fi
         done
         
-        # Получение имени хоста (необязательно)
-        read -p "Введите имя хоста для этого устройства (необязательно): " hostname
+        # Получение имени хоста
+        read -p "Введите имя хоста для этого устройства: " hostname
         
         # Запись статического резервирования
-        if [[ -n $hostname ]]; then
-            echo "dhcp-host=$mac_addr,$hostname,$static_ip" >> /etc/dnsmasq.conf
-        else
-            echo "dhcp-host=$mac_addr,$static_ip" >> /etc/dnsmasq.conf
-        fi
+        echo "" >> /etc/dhcp/dhcpd.conf
+        echo "host $hostname {" >> /etc/dhcp/dhcpd.conf
+        echo "    hardware ethernet $mac_addr;" >> /etc/dhcp/dhcpd.conf
+        echo "    fixed-address $static_ip;" >> /etc/dhcp/dhcpd.conf
+        echo "}" >> /etc/dhcp/dhcpd.conf
         
         print_color $GREEN "Статическое резервирование добавлено!"
     done
 fi
+
+# Настройка интерфейсов для DHCP сервера
+print_color $YELLOW "\n=== Настройка интерфейсов для DHCP сервера ==="
+
+# Обновление конфигурации интерфейсов
+if [ -f /etc/default/isc-dhcp-server ]; then
+    cp /etc/default/isc-dhcp-server /etc/default/isc-dhcp-server.backup.$(date +%Y%m%d_%H%M%S)
+fi
+
+# Формируем строку интерфейсов
+interfaces_string="${selected_interfaces[@]}"
+
+cat > /etc/default/isc-dhcp-server << EOF
+# Defaults for isc-dhcp-server
+# Настроено скриптом dhcp.sh
+
+# Интерфейсы для IPv4
+INTERFACESv4="$interfaces_string"
+
+# Интерфейсы для IPv6 (не используется)
+INTERFACESv6=""
+EOF
 
 # Настройка firewall
 print_color $YELLOW "\n=== Настройка правил firewall ==="
@@ -350,13 +555,23 @@ fi
 
 print_color $GREEN "Правила firewall для DHCP добавлены"
 
-# Включение и запуск dnsmasq
+# Проверка конфигурации
+print_color $YELLOW "\n=== Проверка конфигурации ==="
+if dhcpd -t -cf /etc/dhcp/dhcpd.conf; then
+    print_color $GREEN "Конфигурация корректна!"
+else
+    print_color $RED "Ошибка в конфигурации!"
+    print_color $YELLOW "Проверьте файл /etc/dhcp/dhcpd.conf"
+    exit 1
+fi
+
+# Включение и запуск службы
 print_color $YELLOW "\n=== Запуск DHCP сервиса ==="
-systemctl enable dnsmasq
-systemctl start dnsmasq
+systemctl enable isc-dhcp-server
+systemctl restart isc-dhcp-server
 
 # Проверка статуса службы
-if systemctl is-active --quiet dnsmasq; then
+if systemctl is-active --quiet isc-dhcp-server; then
     print_color $GREEN "DHCP сервер успешно запущен!"
 else
     print_color $RED "Не удалось запустить DHCP сервер!"
@@ -366,13 +581,16 @@ fi
 
 # Показать итоговую информацию
 print_color $GREEN "\n=== Итоговая информация ==="
-echo "Файл конфигурации: /etc/dnsmasq.conf"
-echo "Статус службы: $(systemctl is-active dnsmasq)"
+echo "Файл конфигурации: /etc/dhcp/dhcpd.conf"
+echo "Файл настроек интерфейсов: /etc/default/isc-dhcp-server"
+echo "Статус службы: $(systemctl is-active isc-dhcp-server)"
 echo "Настроенные интерфейсы: ${selected_interfaces[@]}"
+echo "Интерфейс с интернетом: $internet_interface (шлюз: $default_gateway)"
 echo ""
 print_color $GREEN "Установка DHCP сервера завершена успешно!"
 print_color $YELLOW "\nПолезные команды:"
-echo "- Просмотр выданных IP адресов: cat /var/lib/misc/dnsmasq.leases"
-echo "- Перезапуск службы: systemctl restart dnsmasq"
-echo "- Просмотр логов: journalctl -u dnsmasq -f"
-echo "- Редактирование конфигурации: nano /etc/dnsmasq.conf"
+echo "- Просмотр выданных IP адресов: cat /var/lib/dhcp/dhcpd.leases"
+echo "- Перезапуск службы: systemctl restart isc-dhcp-server"
+echo "- Просмотр логов: journalctl -u isc-dhcp-server -f"
+echo "- Редактирование конфигурации: nano /etc/dhcp/dhcpd.conf"
+echo "- Проверка конфигурации: dhcpd -t -cf /etc/dhcp/dhcpd.conf"
