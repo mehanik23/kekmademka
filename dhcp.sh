@@ -1,32 +1,32 @@
 #!/bin/bash
 
-# DHCP Server Installation Script for Debian 10
-# Using dnsmasq as DHCP server
+# Скрипт установки DHCP сервера для Debian 10
+# Используется dnsmasq в качестве DHCP сервера
 
 set -e
 
-# Colors for output
+# Цвета для вывода
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m' # Без цвета
 
-# Function to print colored output
+# Функция для цветного вывода
 print_color() {
     local color=$1
     local message=$2
     echo -e "${color}${message}${NC}"
 }
 
-# Function to check if running as root
+# Функция проверки прав root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        print_color $RED "This script must be run as root!"
+        print_color $RED "Этот скрипт должен быть запущен с правами root!"
         exit 1
     fi
 }
 
-# Function to validate IP address
+# Функция валидации IP адреса
 validate_ip() {
     local ip=$1
     if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
@@ -41,7 +41,7 @@ validate_ip() {
     fi
 }
 
-# Function to validate MAC address
+# Функция валидации MAC адреса
 validate_mac() {
     local mac=$1
     if [[ $mac =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
@@ -51,17 +51,17 @@ validate_mac() {
     fi
 }
 
-# Function to check IP conflicts
+# Функция проверки конфликтов IP
 check_ip_conflict() {
     local ip=$1
     if ping -c 1 -W 1 $ip &>/dev/null; then
-        return 0  # IP is in use
+        return 0  # IP используется
     else
-        return 1  # IP is free
+        return 1  # IP свободен
     fi
 }
 
-# Function to get network interfaces
+# Функция получения сетевых интерфейсов
 get_interfaces() {
     local interfaces=()
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v lo); do
@@ -70,159 +70,170 @@ get_interfaces() {
     echo "${interfaces[@]}"
 }
 
-# Function to select interfaces
+# Функция выбора интерфейсов
 select_interfaces() {
     local interfaces=($(get_interfaces))
     local selected=()
     
-    print_color $GREEN "\nAvailable network interfaces:"
+    print_color $GREEN "\nДоступные сетевые интерфейсы:"
     for i in "${!interfaces[@]}"; do
         echo "$((i+1)). ${interfaces[$i]}"
     done
     
     while true; do
-        read -p "Select interface number (or 'done' to finish): " choice
-        if [[ $choice == "done" ]]; then
+        read -p "Выберите номер интерфейса (или 'готово' для завершения): " choice
+        if [[ $choice == "готово" ]] || [[ $choice == "done" ]]; then
             break
         elif [[ $choice =~ ^[0-9]+$ ]] && [ $choice -ge 1 ] && [ $choice -le ${#interfaces[@]} ]; then
             selected+=("${interfaces[$((choice-1))]}")
-            print_color $GREEN "Added: ${interfaces[$((choice-1))]}"
+            print_color $GREEN "Добавлен: ${interfaces[$((choice-1))]}"
         else
-            print_color $RED "Invalid selection!"
+            print_color $RED "Неверный выбор!"
         fi
     done
     
     echo "${selected[@]}"
 }
 
-# Main script starts here
+# Основной скрипт начинается здесь
 clear
-print_color $GREEN "=== DHCP Server Installation Script for Debian 10 ==="
-print_color $GREEN "=== Using dnsmasq ==="
+print_color $GREEN "=== Скрипт установки DHCP сервера для Debian 10 ==="
+print_color $GREEN "=== Используется dnsmasq ==="
 echo
 
-# Check root privileges
+# Проверка прав root
 check_root
 
-# Update system and install dnsmasq
-print_color $YELLOW "Updating system packages..."
-apt-get update -y
-apt-get upgrade -y
+# Спросить об обновлении системы
+print_color $YELLOW "Хотите обновить систему перед установкой?"
+print_color $YELLOW "Внимание: полное обновление может занять много времени!"
+read -p "Обновить систему? (да/нет): " update_system
+update_system=$(echo $update_system | tr '[:upper:]' '[:lower:]')
 
-print_color $YELLOW "Installing dnsmasq..."
-apt-get install -y dnsmasq
-
-# Stop dnsmasq service temporarily
-systemctl stop dnsmasq
-
-# Backup original configuration
-if [ -f /etc/dnsmasq.conf ]; then
-    cp /etc/dnsmasq.conf /etc/dnsmasq.conf.backup.$(date +%Y%m%d_%H%M%S)
-    print_color $GREEN "Original configuration backed up"
+if [[ $update_system == "да" ]] || [[ $update_system == "yes" ]]; then
+    print_color $YELLOW "Обновление системы..."
+    apt-get update -y
+    apt-get upgrade -y
+    print_color $GREEN "Система обновлена!"
+else
+    print_color $YELLOW "Обновление списка пакетов..."
+    apt-get update -y
 fi
 
-# Start configuration
-print_color $GREEN "\n=== DHCP Configuration ==="
+print_color $YELLOW "Установка dnsmasq..."
+apt-get install -y dnsmasq
 
-# Ask about VLAN usage
-read -p "Are you using VLAN interfaces? (yes/no): " use_vlan
+# Временно остановить службу dnsmasq
+systemctl stop dnsmasq
+
+# Резервное копирование оригинальной конфигурации
+if [ -f /etc/dnsmasq.conf ]; then
+    cp /etc/dnsmasq.conf /etc/dnsmasq.conf.backup.$(date +%Y%m%d_%H%M%S)
+    print_color $GREEN "Оригинальная конфигурация сохранена"
+fi
+
+# Начало настройки
+print_color $GREEN "\n=== Настройка DHCP ==="
+
+# Вопрос об использовании VLAN
+read -p "Используете ли вы VLAN интерфейсы? (да/нет): " use_vlan
 use_vlan=$(echo $use_vlan | tr '[:upper:]' '[:lower:]')
 
-# Select interfaces
-if [[ $use_vlan == "yes" ]]; then
-    print_color $YELLOW "\nDetected VLAN interfaces:"
+# Выбор интерфейсов
+if [[ $use_vlan == "да" ]] || [[ $use_vlan == "yes" ]]; then
+    print_color $YELLOW "\nОбнаруженные VLAN интерфейсы:"
     vlan_interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^vlan[0-9]+' || true)
     if [[ -z $vlan_interfaces ]]; then
-        print_color $RED "No VLAN interfaces found!"
+        print_color $RED "VLAN интерфейсы не найдены!"
     else
         echo "$vlan_interfaces"
     fi
 fi
 
-print_color $YELLOW "\nSelect interfaces for DHCP service:"
+print_color $YELLOW "\nВыберите интерфейсы для DHCP сервиса:"
 selected_interfaces=($(select_interfaces))
 
 if [ ${#selected_interfaces[@]} -eq 0 ]; then
-    print_color $RED "No interfaces selected! Exiting."
+    print_color $RED "Интерфейсы не выбраны! Выход."
     exit 1
 fi
 
-# Create new configuration
+# Создание новой конфигурации
 cat > /etc/dnsmasq.conf << EOF
-# Dnsmasq configuration for DHCP server
-# Generated by dhcp.sh script on $(date)
+# Конфигурация Dnsmasq для DHCP сервера
+# Создано скриптом dhcp.sh $(date)
 
-# Disable DNS function
+# Отключить функцию DNS
 port=0
 
-# Enable DHCP logging
+# Включить логирование DHCP
 log-dhcp
 
-# DHCP authoritative mode
+# Авторитетный режим DHCP
 dhcp-authoritative
 
 EOF
 
-# Configure each interface
+# Настройка каждого интерфейса
 for iface in "${selected_interfaces[@]}"; do
-    print_color $GREEN "\n=== Configuring interface: $iface ==="
+    print_color $GREEN "\n=== Настройка интерфейса: $iface ==="
     
-    # Get current IP of interface if exists
+    # Получить текущий IP интерфейса, если есть
     current_ip=$(ip -4 addr show $iface | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || true)
     if [[ -n $current_ip ]]; then
-        print_color $YELLOW "Current IP on $iface: $current_ip"
+        print_color $YELLOW "Текущий IP на $iface: $current_ip"
     fi
     
-    # Ask for DHCP range
+    # Запрос диапазона DHCP
     while true; do
-        read -p "Enter DHCP range start IP for $iface: " range_start
+        read -p "Введите начальный IP диапазона DHCP для $iface: " range_start
         if validate_ip $range_start; then
             if check_ip_conflict $range_start; then
-                print_color $YELLOW "Warning: IP $range_start appears to be in use!"
-                read -p "Continue anyway? (yes/no): " cont
-                if [[ $cont == "yes" ]]; then
+                print_color $YELLOW "Внимание: IP $range_start уже используется!"
+                read -p "Продолжить всё равно? (да/нет): " cont
+                if [[ $cont == "да" ]] || [[ $cont == "yes" ]]; then
                     break
                 fi
             else
                 break
             fi
         else
-            print_color $RED "Invalid IP address!"
+            print_color $RED "Неверный IP адрес!"
         fi
     done
     
     while true; do
-        read -p "Enter DHCP range end IP for $iface: " range_end
+        read -p "Введите конечный IP диапазона DHCP для $iface: " range_end
         if validate_ip $range_end; then
             if check_ip_conflict $range_end; then
-                print_color $YELLOW "Warning: IP $range_end appears to be in use!"
-                read -p "Continue anyway? (yes/no): " cont
-                if [[ $cont == "yes" ]]; then
+                print_color $YELLOW "Внимание: IP $range_end уже используется!"
+                read -p "Продолжить всё равно? (да/нет): " cont
+                if [[ $cont == "да" ]] || [[ $cont == "yes" ]]; then
                     break
                 fi
             else
                 break
             fi
         else
-            print_color $RED "Invalid IP address!"
+            print_color $RED "Неверный IP адрес!"
         fi
     done
     
-    # Ask for gateway
+    # Запрос шлюза
     while true; do
-        read -p "Enter gateway IP for $iface: " gateway
+        read -p "Введите IP адрес шлюза для $iface: " gateway
         if validate_ip $gateway; then
             break
         else
-            print_color $RED "Invalid IP address!"
+            print_color $RED "Неверный IP адрес!"
         fi
     done
     
-    # Ask for DNS servers
+    # Запрос DNS серверов
     dns_servers=""
     while true; do
-        read -p "Enter DNS server IP (or 'done' to finish): " dns
-        if [[ $dns == "done" ]]; then
+        read -p "Введите IP адрес DNS сервера (или 'готово' для завершения): " dns
+        if [[ $dns == "готово" ]] || [[ $dns == "done" ]]; then
             break
         elif validate_ip $dns; then
             if [[ -z $dns_servers ]]; then
@@ -230,18 +241,18 @@ for iface in "${selected_interfaces[@]}"; do
             else
                 dns_servers="$dns_servers,$dns"
             fi
-            print_color $GREEN "Added DNS: $dns"
+            print_color $GREEN "Добавлен DNS: $dns"
         else
-            print_color $RED "Invalid IP address!"
+            print_color $RED "Неверный IP адрес!"
         fi
     done
     
-    # Ask for domain name
-    read -p "Enter domain name (optional, press Enter to skip): " domain_name
+    # Запрос доменного имени
+    read -p "Введите доменное имя (необязательно, нажмите Enter для пропуска): " domain_name
     
-    # Write interface configuration
+    # Запись конфигурации интерфейса
     echo "" >> /etc/dnsmasq.conf
-    echo "# Configuration for interface $iface" >> /etc/dnsmasq.conf
+    echo "# Конфигурация для интерфейса $iface" >> /etc/dnsmasq.conf
     echo "interface=$iface" >> /etc/dnsmasq.conf
     echo "dhcp-range=$iface,$range_start,$range_end,12h" >> /etc/dnsmasq.conf
     
@@ -258,110 +269,110 @@ for iface in "${selected_interfaces[@]}"; do
     fi
 done
 
-# Ask for static IP reservations
-print_color $GREEN "\n=== Static IP Reservations ==="
-read -p "Do you want to add static IP reservations? (yes/no): " add_static
+# Запрос статических резерваций IP
+print_color $GREEN "\n=== Статические резервирования IP ==="
+read -p "Хотите добавить статические резервирования IP? (да/нет): " add_static
 add_static=$(echo $add_static | tr '[:upper:]' '[:lower:]')
 
-if [[ $add_static == "yes" ]]; then
+if [[ $add_static == "да" ]] || [[ $add_static == "yes" ]]; then
     echo "" >> /etc/dnsmasq.conf
-    echo "# Static IP reservations" >> /etc/dnsmasq.conf
+    echo "# Статические резервирования IP" >> /etc/dnsmasq.conf
     
     while true; do
-        read -p "\nAdd a static reservation? (yes/no): " add_more
+        read -p "\nДобавить статическое резервирование? (да/нет): " add_more
         add_more=$(echo $add_more | tr '[:upper:]' '[:lower:]')
         
-        if [[ $add_more != "yes" ]]; then
+        if [[ $add_more != "да" ]] && [[ $add_more != "yes" ]]; then
             break
         fi
         
-        # Get MAC address
+        # Получение MAC адреса
         while true; do
-            read -p "Enter MAC address (format: AA:BB:CC:DD:EE:FF): " mac_addr
+            read -p "Введите MAC адрес (формат: AA:BB:CC:DD:EE:FF): " mac_addr
             if validate_mac $mac_addr; then
                 break
             else
-                print_color $RED "Invalid MAC address format!"
+                print_color $RED "Неверный формат MAC адреса!"
             fi
         done
         
-        # Get IP address
+        # Получение IP адреса
         while true; do
-            read -p "Enter IP address for this device: " static_ip
+            read -p "Введите IP адрес для этого устройства: " static_ip
             if validate_ip $static_ip; then
                 if check_ip_conflict $static_ip; then
-                    print_color $YELLOW "Warning: IP $static_ip appears to be in use!"
-                    read -p "Continue anyway? (yes/no): " cont
-                    if [[ $cont == "yes" ]]; then
+                    print_color $YELLOW "Внимание: IP $static_ip уже используется!"
+                    read -p "Продолжить всё равно? (да/нет): " cont
+                    if [[ $cont == "да" ]] || [[ $cont == "yes" ]]; then
                         break
                     fi
                 else
                     break
                 fi
             else
-                print_color $RED "Invalid IP address!"
+                print_color $RED "Неверный IP адрес!"
             fi
         done
         
-        # Get hostname (optional)
-        read -p "Enter hostname for this device (optional): " hostname
+        # Получение имени хоста (необязательно)
+        read -p "Введите имя хоста для этого устройства (необязательно): " hostname
         
-        # Write static reservation
+        # Запись статического резервирования
         if [[ -n $hostname ]]; then
             echo "dhcp-host=$mac_addr,$hostname,$static_ip" >> /etc/dnsmasq.conf
         else
             echo "dhcp-host=$mac_addr,$static_ip" >> /etc/dnsmasq.conf
         fi
         
-        print_color $GREEN "Static reservation added!"
+        print_color $GREEN "Статическое резервирование добавлено!"
     done
 fi
 
-# Configure firewall
-print_color $YELLOW "\n=== Configuring firewall rules ==="
-# Check if iptables is installed
+# Настройка firewall
+print_color $YELLOW "\n=== Настройка правил firewall ==="
+# Проверка установки iptables
 if ! command -v iptables &> /dev/null; then
     apt-get install -y iptables
 fi
 
-# Add firewall rules for DHCP
+# Добавление правил firewall для DHCP
 iptables -A INPUT -p udp --dport 67:68 -j ACCEPT
 iptables -A OUTPUT -p udp --sport 67:68 -j ACCEPT
 
-# Save iptables rules
+# Сохранение правил iptables
 if command -v netfilter-persistent &> /dev/null; then
     netfilter-persistent save
 else
-    # Install iptables-persistent
+    # Установка iptables-persistent
     DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
     netfilter-persistent save
 fi
 
-print_color $GREEN "Firewall rules added for DHCP"
+print_color $GREEN "Правила firewall для DHCP добавлены"
 
-# Enable and start dnsmasq
-print_color $YELLOW "\n=== Starting DHCP service ==="
+# Включение и запуск dnsmasq
+print_color $YELLOW "\n=== Запуск DHCP сервиса ==="
 systemctl enable dnsmasq
 systemctl start dnsmasq
 
-# Check service status
+# Проверка статуса службы
 if systemctl is-active --quiet dnsmasq; then
-    print_color $GREEN "DHCP server is running successfully!"
+    print_color $GREEN "DHCP сервер успешно запущен!"
 else
-    print_color $RED "Failed to start DHCP server!"
-    print_color $YELLOW "Check logs with: journalctl -xe"
+    print_color $RED "Не удалось запустить DHCP сервер!"
+    print_color $YELLOW "Проверьте логи командой: journalctl -xe"
     exit 1
 fi
 
-# Show configuration summary
-print_color $GREEN "\n=== Configuration Summary ==="
-echo "Configuration file: /etc/dnsmasq.conf"
-echo "Service status: $(systemctl is-active dnsmasq)"
-echo "Configured interfaces: ${selected_interfaces[@]}"
+# Показать итоговую информацию
+print_color $GREEN "\n=== Итоговая информация ==="
+echo "Файл конфигурации: /etc/dnsmasq.conf"
+echo "Статус службы: $(systemctl is-active dnsmasq)"
+echo "Настроенные интерфейсы: ${selected_interfaces[@]}"
 echo ""
-print_color $GREEN "DHCP server installation completed successfully!"
-print_color $YELLOW "\nUseful commands:"
-echo "- Check DHCP leases: cat /var/lib/misc/dnsmasq.leases"
-echo "- Restart service: systemctl restart dnsmasq"
-echo "- View logs: journalctl -u dnsmasq -f"
-echo "- Edit configuration: nano /etc/dnsmasq.conf"
+print_color $GREEN "Установка DHCP сервера завершена успешно!"
+print_color $YELLOW "\nПолезные команды:"
+echo "- Просмотр выданных IP адресов: cat /var/lib/misc/dnsmasq.leases"
+echo "- Перезапуск службы: systemctl restart dnsmasq"
+echo "- Просмотр логов: journalctl -u dnsmasq -f"
+echo "- Редактирование конфигурации: nano /etc/dnsmasq.conf"
