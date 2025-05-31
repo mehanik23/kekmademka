@@ -173,7 +173,7 @@ print_color $GREEN "\n=== Настройка DHCP ==="
 print_color $YELLOW "\nСначала выберите интерфейс с доступом в интернет (для указания маршрута по умолчанию):"
 interfaces_array=($(get_interfaces))
 for i in "${!interfaces_array[@]}"; do
-    local ip=$(ip -4 addr show ${interfaces_array[$i]} | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
+    ip=$(ip -4 addr show ${interfaces_array[$i]} | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
     echo "$((i+1)). ${interfaces_array[$i]} (IP: $ip)"
 done
 
@@ -203,7 +203,7 @@ vlan_interfaces=($(get_vlan_interfaces))
 if [ ${#vlan_interfaces[@]} -gt 0 ]; then
     print_color $YELLOW "\nОбнаружены VLAN интерфейсы:"
     for vlan in "${vlan_interfaces[@]}"; do
-        local ip=$(ip -4 addr show $vlan | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
+        ip=$(ip -4 addr show $vlan | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
         echo "  - $vlan (IP: $ip)"
     done
     
