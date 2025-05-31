@@ -63,7 +63,7 @@ check_ip_conflict() {
 
 # Функция получения сетевых интерфейсов
 get_interfaces() {
-    local interfaces=()
+    interfaces=()
     # Получаем все интерфейсы, включая обычные и VLAN
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v lo); do
         interfaces+=("$iface")
@@ -73,7 +73,7 @@ get_interfaces() {
 
 # Функция получения VLAN интерфейсов
 get_vlan_interfaces() {
-    local vlans=()
+    vlans=()
     # Ищем VLAN интерфейсы (формат vlanXXX)
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -E '^vlan[0-9]+'); do
         vlans+=("$iface")
@@ -83,34 +83,35 @@ get_vlan_interfaces() {
 
 # Функция вычисления сетевой маски из CIDR
 cidr_to_netmask() {
-    local cidr=$1
-    local value=$(( 0xffffffff ^ ((1 << (32 - $cidr)) - 1) ))
+    cidr=$1
+    value=$(( 0xffffffff ^ ((1 << (32 - $cidr)) - 1) ))
     echo "$(( (value >> 24) & 0xff )).$(( (value >> 16) & 0xff )).$(( (value >> 8) & 0xff )).$(( value & 0xff ))"
 }
 
 # Функция вычисления сети из IP и CIDR
 get_network() {
-    local ip=$1
-    local cidr=$2
-    local IFS='.'
+    ip=$1
+    cidr=$2
+    IFS='.'
     read -r i1 i2 i3 i4 <<< "$ip"
-    local mask=$(( 0xffffffff ^ ((1 << (32 - $cidr)) - 1) ))
-    local m1=$(( (mask >> 24) & 0xff ))
-    local m2=$(( (mask >> 16) & 0xff ))
-    local m3=$(( (mask >> 8) & 0xff ))
-    local m4=$(( mask & 0xff ))
+    mask=$(( 0xffffffff ^ ((1 << (32 - $cidr)) - 1) ))
+    m1=$(( (mask >> 24) & 0xff ))
+    m2=$(( (mask >> 16) & 0xff ))
+    m3=$(( (mask >> 8) & 0xff ))
+    m4=$(( mask & 0xff ))
     
     echo "$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).$((i4 & m4))"
 }
 
 # Функция выбора интерфейсов
 select_interfaces() {
-    local interfaces=($(get_interfaces))
-    local selected=()
+    interfaces=($(get_interfaces))
+    selected=()
+    ip=""
     
     print_color $GREEN "\nДоступные сетевые интерфейсы:"
     for i in "${!interfaces[@]}"; do
-        local ip=$(ip -4 addr show ${interfaces[$i]} | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
+        ip=$(ip -4 addr show ${interfaces[$i]} | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
         echo "$((i+1)). ${interfaces[$i]} (IP: $ip)"
     done
     
