@@ -190,7 +190,11 @@ configure_static_ip() {
         sleep 3
         
         # Показать полученный IP
-        new_ip=$(ip -4 addr show $selected_interface | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "ожидание...")
+        new_ip=$(ip -4 addr show $selected_interface | grep inet | awk '{print $2}' | cut -d/ -f1 | head -1)
+        if [ -z "$new_ip" ]; then
+            new_ip="ожидание..."
+        fi
+        
         if [ -n "$new_ip" ] && [ "$new_ip" != "ожидание..." ]; then
             log "Получен IP адрес: $new_ip"
         else
@@ -747,10 +751,10 @@ configure_masquerade() {
     # Добавляем VLAN интерфейсы из OVS если есть
     if command -v ovs-vsctl &> /dev/null; then
         ovs_bridges=$(ovs-vsctl list-br 2>/dev/null || true)
-        if [[ -n "$ovs_bridges" ]]; then
+        if [ -n "$ovs_bridges" ]; then
             for bridge in $ovs_bridges; do
                 ovs_interfaces=$(ovs-vsctl list-ifaces $bridge 2>/dev/null | grep -E '^vlan[0-9]+' || true)
-                if [[ -n "$ovs_interfaces" ]]; then
+                if [ -n "$ovs_interfaces" ]; then
                     for iface in $ovs_interfaces; do
                         all_interfaces+=("$iface")
                     done
@@ -762,7 +766,10 @@ configure_masquerade() {
     echo ""
     info "Доступные сетевые интерфейсы:"
     for i in "${!all_interfaces[@]}"; do
-        ip_addr=$(ip -4 addr show ${all_interfaces[$i]} 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
+        ip_addr=$(ip -4 addr show ${all_interfaces[$i]} 2>/dev/null | grep inet | awk '{print $2}' | cut -d/ -f1 | head -1)
+        if [ -z "$ip_addr" ]; then
+            ip_addr="нет IP"
+        fi
         echo "  $((i+1))) ${all_interfaces[$i]} (IP: $ip_addr)"
     done
     
