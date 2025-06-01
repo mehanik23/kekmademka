@@ -184,12 +184,6 @@ restart_and_enable_bind() {
   fi
 }
 
-# Установка DNS для всей системы
-setup_resolv_conf() {
-  log "Настройка /etc/resolv.conf для использования локального DNS..."
-  echo "nameserver $SERVER_IP" > /etc/resolv.conf
-}
-
 # Проверка доступности порта 53
 check_dns_port() {
   log "Проверка, слушает ли BIND порт 53..."
@@ -199,6 +193,21 @@ check_dns_port() {
     error "Порт 53 не прослушивается! Проверьте named.conf.options"
     return 1
   fi
+}
+
+# Разрешение порта 53 в брандмауэре
+setup_firewall() {
+  log "Разрешение порта 53 в брандмауэре..."
+  ufw allow 53/tcp
+  ufw allow 53/udp
+  ufw reload
+  log "Брандмауэр настроен"
+}
+
+# Установка DNS для всей системы
+setup_resolv_conf() {
+  log "Настройка /etc/resolv.conf для использования локального DNS..."
+  echo "nameserver 127.0.0.1" > /etc/resolv.conf
 }
 
 # Тестирование через dig + ping
@@ -238,6 +247,7 @@ main_menu() {
         update_options_config
         check_config
         setup_resolv_conf
+        setup_firewall
         restart_and_enable_bind
         check_dns_port
         test_with_dig_and_ping
