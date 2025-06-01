@@ -7,9 +7,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # Константы
-ZONE_DIR="/etc/bind/zones"
 FORWARD_ZONE="au-team.irpo"
 REVERSE_ZONE="100.168.192.in-addr.arpa"
+ZONE_DIR="/etc/bind/zones"
 FORWARD_FILE="$ZONE_DIR/au-team.db"
 REVERSE_FILE="$ZONE_DIR/au-team_rev.db"
 
@@ -24,11 +24,12 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Проверка установки bind9
-check_bind() {
+# Установка bind9 и dnsutils
+install_packages() {
+  log "Проверка установленных пакетов..."
   if ! command -v named-checkconf &> /dev/null; then
-    error "BIND9 не установлен. Установка..."
-    apt update && apt install -y bind9
+    log "Установка bind9 и dnsutils..."
+    apt update && apt install -y bind9 dnsutils
   fi
 }
 
@@ -109,18 +110,19 @@ options {
     directory "/var/cache/bind";
 
     // Forwarding
-    forwarders { 8.8.8.8; };
+    forwarders { 77.88.8.8; };
 
-    // Listen on all interfaces
-    listen-on { any; };
-    listen-on-v6 { any; };
+    // Listening ports and interfaces
+    listen-on port 53 { 127.0.0.1; 192.168.0.0/26; 192.168.100.64/28; 192.1; };
+    listen-on-v6 port 53 { none; };
 
-    // Allow queries from local network
+    // Query access
     allow-query { any; };
 
-    // Enable recursion for internal clients
+    // Recursion settings
     recursion no;
 
+    // DNSSEC
     dnssec-validation auto;
 };
 EOF
@@ -171,6 +173,17 @@ restart_and_enable_bind() {
   fi
 }
 
+# Тестирование через dig
+test_with_dig() {
+  prompt "Выполняется тестирование через 'dig'..."
+
+  echo -e "\nЗапрос A-записи для host1.au-team.irpo:"
+  dig @127.0.0.1 host1.au-team.irpo +short
+
+  echo -e "\nЗапрос PTR-записи для 192.168.100.11:"
+  dig @127.0.0.1 -x 192.168.100.11 +short
+}
+
 # Основное меню
 main_menu() {
   while true; do
@@ -185,13 +198,15 @@ main_menu() {
     
     case $choice in
       1)
-        check_bind
+        install_packages
         create_zone_dir
         create_forward_zone
         create_reverse_zone
         update_named_config
         update_options_config
+        check_config
         restart_and_enable_bind
+        test_with_dig
         ;;
       2)
         check_config
