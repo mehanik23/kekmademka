@@ -174,7 +174,24 @@ configure_static_ip() {
             error "Неверный выбор. Введите число от 1 до ${#interfaces[@]}"
         fi
     done
-    
+
+    prompt "Выберите режим настройки сети (1 - Статический IP, 2 - DHCP): "
+read -r ip_mode
+if [[ "$ip_mode" == "2" ]]; then
+    log "Переключение интерфейса $selected_interface на DHCP..."
+    dhclient "$selected_interface" &>/dev/null || error "Не удалось получить IP по DHCP"
+    # Сохранение конфигурации systemd-networkd для DHCP
+    cat > /etc/systemd/network/10-dhcp-$selected_interface.network << EOF
+[Match]
+Name=$selected_interface
+
+[Network]
+DHCP=yes
+EOF
+    systemctl restart systemd-networkd
+    log "Интерфейс $selected_interface переведен на DHCP"
+    return
+fi
     # Ввод и валидация IP адреса
     while true; do
         read -p "Введите IP адрес: " ip
@@ -720,73 +737,49 @@ configure_masquerade() {
     for i in "${!interfaces[@]}"; do
         echo "  $((i+1))) ${interfaces[$i]}"
     done
-    
-    # Также показать OVS VLAN интерфейсы если есть
-    if command -v ovs-vsctl &> /dev/null; then
-        ovs_interfaces=$(ovs-vsctl list-ifaces $(ovs-vsctl list-br 2>/dev/null) 2>/dev/null | grep -E '^vlan[0-9]+' || true)
-        if [[ -n "$ovs_interfaces" ]]; then
-            info "Доступные VLAN интерфейсы:"
-            echo "$ovs_interfaces"
-            interfaces+=($ovs_interfaces)
-        fi
-    fi
-    
-    while true; do
-        prompt "Выберите внешний интерфейс для маскарадинга (1-${#interfaces[@]}): "
-        read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
-            external_interface=${interfaces[$((choice-1))]}
-            break
-        else
-            error "Неверный выбор"
-        fi
-    done
-    
+
     while true; do
         prompt "Выберите внутренний интерфейс для локальной сети (1-${#interfaces[@]}): "
         read -r choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
             internal_interface=${interfaces[$((choice-1))]}
-            if [[ "$internal_interface" == "$external_interface" ]]; then
-                error "Внутренний и внешний интерфейсы не могут совпадать!"
-                continue
-            fi
             break
         else
             error "Неверный выбор"
         fi
     done
-    
-    log "Настройка IP-форвардинга и маскарадинга..."
+
+    log "Настройка IP-форвардинга и маскарадинга для всех интерфейсов..."
     
     # Включение IP форвардинга
     echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-ipforward.conf
     sysctl -p /etc/sysctl.d/99-ipforward.conf
-    
+
     # Проверка установки iptables
     if ! command -v iptables &> /dev/null; then
         log "Установка iptables..."
         apt update
         apt install -y iptables
     fi
-    
+
     # Очистка старых правил
     iptables -F
     iptables -t nat -F
-    
-    # Настройка правил маскарадинга
-    iptables -t nat -A POSTROUTING -o $external_interface -j MASQUERADE
-    iptables -A FORWARD -i $external_interface -o $internal_interface -m state --state RELATED,ESTABLISHED -j ACCEPT
-    iptables -A FORWARD -i $internal_interface -o $external_interface -j ACCEPT
-    
+
+    # Маскарадинг для всех исходящих пакетов
+    iptables -t nat -A POSTROUTING -j MASQUERADE
+
+    # Разрешение трафика внутри локальной сети
+    iptables -A FORWARD -i "$internal_interface" -j ACCEPT
+    iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
     # Установка и сохранение правил iptables
     log "Установка и сохранение правил iptables..."
     DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
     netfilter-persistent save
-    
-    log "Маскарадинг настроен для: $internal_interface -> $external_interface"
-}
 
+    log "Маскарадинг настроен для интерфейса: $internal_interface (весь исходящий трафик)"
+}
 # Проверка интернета
 test_internet_connection() {
     log "Проверка подключения к интернету..."
