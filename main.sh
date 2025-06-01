@@ -28,7 +28,7 @@ prompt() {
 
 # Проверка прав root
 check_root() {
-    if [[ $EUID -ne 0 ]]; then
+    if [ $EUID -ne 0 ]; then
         error "Этот скрипт должен быть запущен с правами root"
         exit 1
     fi
@@ -116,7 +116,7 @@ save_network_config() {
     echo "DNS=$dns1" >> /etc/systemd/network/10-static-$interface.network
     
     # Добавление второго DNS, если он указан
-    if [[ -n "$dns2" ]]; then
+    if [ -n "$dns2" ]; then
         echo "DNS=$dns2" >> /etc/systemd/network/10-static-$interface.network
     fi
 
@@ -246,7 +246,7 @@ configure_static_ip() {
         done
         
         read -p "Введите дополнительный DNS сервер (необязательно, Enter для пропуска): " dns2
-        if [[ -n "$dns2" ]] && ! validate_ip "$dns2"; then
+        if [ -n "$dns2" ] && ! validate_ip "$dns2"; then
             warn "Неверный формат дополнительного DNS, будет использован только основной"
             dns2=""
         fi
@@ -264,7 +264,7 @@ configure_static_ip() {
         
         # Настройка DNS
         echo "nameserver $dns1" > /etc/resolv.conf
-        if [[ -n "$dns2" ]]; then
+        if [ -n "$dns2" ]; then
             echo "nameserver $dns2" >> /etc/resolv.conf
         fi
 
@@ -305,7 +305,7 @@ configure_openvswitch() {
     if ovs-vsctl br-exists $bridge_name 2>/dev/null; then
         warn "Мост $bridge_name уже существует!"
         read -p "Удалить существующий мост и создать заново? (да/нет): " recreate
-        if [[ $recreate == "да" ]] || [[ $recreate == "yes" ]]; then
+        if [ "$recreate" = "да" ] || [ "$recreate" = "yes" ]; then
             ovs-vsctl del-br $bridge_name
         else
             return
