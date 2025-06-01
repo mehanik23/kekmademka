@@ -120,16 +120,17 @@ save_network_config() {
     local gateway=$4
     local dns1=$5
     local dns2=$6
+
     log "Сохранение сетевых настроек для интерфейса $interface..."
 
-    # Удаление старых конфигов
+    # Убедимся, что директория существует
+    mkdir -p /etc/systemd/network
+
+    # Удалим старые конфиги
     rm -f /etc/systemd/network/10-static-${interface}.network
     rm -f /etc/systemd/network/10-dhcp-${interface}.network
 
-    # Создание директории если не существует
-    mkdir -p /etc/systemd/network
-
-    # Создание конфигурации systemd-networkd
+    # Создадим новый конфиг
     cat > /etc/systemd/network/10-static-${interface}.network << EOF
 [Match]
 Name=${interface}
@@ -140,19 +141,35 @@ DHCP=no
 DNS=${dns1}
 EOF
 
-    # Добавление второго DNS, если он указан
-    if [[ -n "$dns2" ]]; then
-        echo "DNS=${dns2}" >> /etc/systemd/network/10-static-${interface}.network
-    fi
+    # Добавим второй DNS, если он указан
+    [[ -n "$dns2" ]] && echo "DNS=${dns2}" >> /etc/systemd/network/10-static-${interface}.network
 
-    # Добавление шлюза, если он указан
-    if [[ -n "$gateway" ]]; then
-        echo "Gateway=${gateway}" >> /etc/systemd/network/10-static-${interface}.network
-    fi
+    # Добавим шлюз, если он указан
+    [[ -n "$gateway" ]] && echo "Gateway=${gateway}" >> /etc/systemd/network/10-static-${interface}.network
 
-    # Включение и перезапуск systemd-networkd
-    systemctl enable systemd-networkd
+    # Проверим, не заблокирован ли systemd-networkd
+    systemctl unmask systemd-networkd &>/dev/null
+
+    # Перезапустим службу с логами
+    systemctl daemon-reexec
     systemctl restart systemd-networkd
+
+    # Проверим статус
+    if systemctl is-active systemd-networkd &>/dev/null; then
+        log "Служба systemd-networkd активна"
+    else
+        error "Служба systemd-networkd не запущена!"
+        systemctl status systemd-networkd --no-pager
+    fi
+
+    # Проверим, применился ли IP после перезапуска
+    sleep 2
+    local applied_ip=$(ip addr show $interface | grep "inet" | awk '{print $2}')
+    if [[ "$applied_ip" == "${ip_address}/${netmask}" ]]; then
+        log "IP успешно применён: $applied_ip"
+    else
+        error "IP не применён! Текущий IP: $applied_ip"
+    fi
 
     log "Настройки для интерфейса ${interface} сохранены и будут применены при перезагрузке."
 }
