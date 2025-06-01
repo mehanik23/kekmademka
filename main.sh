@@ -127,15 +127,17 @@ save_network_config() {
     mkdir -p /etc/systemd/network
 
     # Создание конфигурации systemd-networkd
-    cat > /etc/systemd/network/10-static-$interface.network << EOF
+cat > /etc/systemd/network/10-static-$interface.network << EOF
 [Match]
 Name=$interface
-
 [Network]
 Address=$ip_address/$netmask
-Gateway=$gateway
 DNS=$dns1
 EOF
+
+if [[ -n "$gateway" ]]; then
+    echo "Gateway=$gateway" >> /etc/systemd/network/10-static-$interface.network
+fi
 
     # Добавление второго DNS, если он указан
     if [[ -n "$dns2" ]]; then
@@ -178,18 +180,17 @@ configure_static_ip() {
     prompt "Выберите режим настройки сети (1 - Статический IP, 2 - DHCP): "
 read -r ip_mode
 if [[ "$ip_mode" == "2" ]]; then
-    log "Переключение интерфейса $selected_interface на DHCP..."
-    dhclient "$selected_interface" &>/dev/null || error "Не удалось получить IP по DHCP"
-    # Сохранение конфигурации systemd-networkd для DHCP
-    cat > /etc/systemd/network/10-dhcp-$selected_interface.network << EOF
+# Полная обновленная секция DHCP:
+log "Переключение интерфейса $selected_interface на DHCP..."
+rm -f /etc/systemd/network/10-static-$selected_interface.network
+cat > /etc/systemd/network/10-dhcp-$selected_interface.network << EOF
 [Match]
 Name=$selected_interface
-
 [Network]
 DHCP=yes
 EOF
-    systemctl restart systemd-networkd
-    log "Интерфейс $selected_interface переведен на DHCP"
+systemctl restart systemd-networkd
+log "Интерфейс $selected_interface переведен на DHCP"
     return
 fi
     # Ввод и валидация IP адреса
@@ -213,14 +214,13 @@ fi
     done
     
     # Ввод и валидация шлюза
-    while true; do
-        read -p "Введите шлюз: " gateway
-        if validate_ip "$gateway"; then
-            break
-        else
+    read -p "Введите шлюз (оставьте пустым для пропуска): " gateway
+    if [[ -n "$gateway" ]]; then
+        if ! validate_ip "$gateway"; then
             error "Неверный формат IP адреса шлюза"
+            gateway=""
         fi
-    done
+    fi
     
     # Ввод и валидация DNS
     while true; do
@@ -247,8 +247,10 @@ fi
     
     # Удаление старого маршрута по умолчанию и добавление нового
     ip route del default 2>/dev/null
-    ip route add default via $gateway
-    
+    if [[ -n "$gateway" ]]; then
+        ip route add default via "$gateway"
+    fi
+        
     # Настройка DNS
     echo "nameserver $dns1" > /etc/resolv.conf
     if [[ -n "$dns2" ]]; then
@@ -257,7 +259,11 @@ fi
 
     # Сохранение настроек
     save_network_config "$selected_interface" "$ip" "$mask" "$gateway" "$dns1" "$dns2"
-
+if [[ -n "$dns2" ]]; then
+    echo "DNS=$dns1 $dns2" >> /etc/systemd/network/10-static-$interface.network
+else
+    echo "DNS=$dns1" >> /etc/systemd/network/10-static-$interface.network
+fi
     log "Настройка завершена!"
 }
 
