@@ -121,10 +121,14 @@ save_network_config() {
     local dns1=$5
     local dns2=$6
     log "Сохранение сетевых настроек для интерфейса $interface..."
+
+    # Удаление старых конфигов
+    rm -f /etc/systemd/network/10-static-${interface}.network
+    rm -f /etc/systemd/network/10-dhcp-${interface}.network
+
     # Создание директории если не существует
     mkdir -p /etc/systemd/network
-    # Удаление старых конфигов DHCP для этого интерфейса
-    rm -f /etc/systemd/network/10-dhcp-${interface}.network
+
     # Создание конфигурации systemd-networkd
     cat > /etc/systemd/network/10-static-${interface}.network << EOF
 [Match]
@@ -135,21 +139,24 @@ Address=${ip_address}/${netmask}
 DHCP=no
 DNS=${dns1}
 EOF
+
     # Добавление второго DNS, если он указан
     if [[ -n "$dns2" ]]; then
         echo "DNS=${dns2}" >> /etc/systemd/network/10-static-${interface}.network
     fi
+
     # Добавление шлюза, если он указан
     if [[ -n "$gateway" ]]; then
         echo "Gateway=${gateway}" >> /etc/systemd/network/10-static-${interface}.network
     fi
+
     # Включение и перезапуск systemd-networkd
     systemctl enable systemd-networkd
     systemctl restart systemd-networkd
+
     log "Настройки для интерфейса ${interface} сохранены и будут применены при перезагрузке."
 }
 
-# Настройка статического IP
 # Настройка статического IP
 configure_static_ip() {
     # Проверка и отключение NetworkManager при первой настройке сети
