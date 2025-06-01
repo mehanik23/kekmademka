@@ -177,14 +177,14 @@ restart_and_enable_bind() {
 test_with_dig_and_ping() {
   prompt "Выполняется тестирование через 'dig' и 'ping'..."
 
-  echo -e "\nЗапрос A-записи для host1.au-team.irpo:"
-  dig @127.0.0.1 host1.au-team.irpo +short
+  echo -e "\nЗапрос A-записи для au-team.irpo:"
+  dig @127.0.0.1 au-team.irpo +short
 
   echo -e "\nЗапрос PTR-записи для 192.168.100.11:"
   dig @127.0.0.1 -x 192.168.100.11 +short
 
-  echo -e "\nПинг host1.au-team.irpo..."
-  ping -c 2 host1.au-team.irpo
+  echo -e "\nПинг au-team.irpo..."
+  ping -c 2 au-team.irpo
 
   echo -e "\nПинг 192.168.100.11..."
   ping -c 2 192.168.100.11
