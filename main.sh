@@ -113,6 +113,7 @@ get_interfaces() {
 }
 
 # Сохранение сетевых настроек через systemd-networkd
+# Обновленная функция save_network_config
 save_network_config() {
     local interface=$1
     local ip_address=$2
@@ -120,37 +121,32 @@ save_network_config() {
     local gateway=$4
     local dns1=$5
     local dns2=$6
-
     log "Сохранение сетевых настроек для интерфейса $interface..."
-
     # Создание директории если не существует
     mkdir -p /etc/systemd/network
-
     # Создание конфигурации systemd-networkd
-cat > /etc/systemd/network/10-static-$interface.network << EOF
+    cat > /etc/systemd/network/10-static-$interface.network << EOF
 [Match]
 Name=$interface
 [Network]
 Address=$ip_address/$netmask
 DNS=$dns1
 EOF
-
-if [[ -n "$gateway" ]]; then
-    echo "Gateway=$gateway" >> /etc/systemd/network/10-static-$interface.network
-fi
-
     # Добавление второго DNS, если он указан
     if [[ -n "$dns2" ]]; then
         echo "DNS=$dns2" >> /etc/systemd/network/10-static-$interface.network
     fi
-
+    # Добавление шлюза, если он указан
+    if [[ -n "$gateway" ]]; then
+        echo "Gateway=$gateway" >> /etc/systemd/network/10-static-$interface.network
+    fi
     # Включение и перезапуск systemd-networkd
     systemctl enable systemd-networkd
     systemctl restart systemd-networkd
-
     log "Настройки для интерфейса $interface сохранены и будут применены при перезагрузке."
 }
 
+# Настройка статического IP
 # Настройка статического IP
 configure_static_ip() {
     # Проверка и отключение NetworkManager при первой настройке сети
@@ -158,14 +154,14 @@ configure_static_ip() {
         warn "Для корректной работы статических настроек рекомендуется отключить NetworkManager"
         disable_networkmanager
     fi
-    
+
     get_interfaces
     echo ""
     info "Доступные сетевые интерфейсы:"
     for i in "${!interfaces[@]}"; do
         echo "  $((i+1))) ${interfaces[$i]}"
     done
-    
+
     while true; do
         prompt "Выберите интерфейс для настройки (1-${#interfaces[@]}): "
         read -r choice
@@ -178,21 +174,36 @@ configure_static_ip() {
     done
 
     prompt "Выберите режим настройки сети (1 - Статический IP, 2 - DHCP): "
-read -r ip_mode
-if [[ "$ip_mode" == "2" ]]; then
-# Полная обновленная секция DHCP:
-log "Переключение интерфейса $selected_interface на DHCP..."
-rm -f /etc/systemd/network/10-static-$selected_interface.network
-cat > /etc/systemd/network/10-dhcp-$selected_interface.network << EOF
+    read -r ip_mode
+
+    # Полная секция DHCP:
+    if [[ "$ip_mode" == "2" ]]; then
+        log "Переключение интерфейса $selected_interface на DHCP..."
+        
+        # Удаление старых статических конфигураций
+        rm -f /etc/systemd/network/10-static-$selected_interface.network
+        
+        # Создание нового DHCP конфига
+        cat > /etc/systemd/network/10-dhcp-$selected_interface.network << EOF
 [Match]
 Name=$selected_interface
 [Network]
 DHCP=yes
 EOF
-systemctl restart systemd-networkd
-log "Интерфейс $selected_interface переведен на DHCP"
-    return
-fi
+
+        # Перезапуск службы
+        systemctl restart systemd-networkd
+        
+        # Проверка успешности получения IP
+        if ip addr show $selected_interface | grep -q "inet "; then
+            log "Интерфейс $selected_interface переведен на DHCP"
+        else
+            error "Не удалось получить IP по DHCP"
+        fi
+        
+        return
+    fi
+
     # Ввод и валидация IP адреса
     while true; do
         read -p "Введите IP адрес: " ip
@@ -202,7 +213,7 @@ fi
             error "Неверный формат IP адреса. Пример: 192.168.1.100"
         fi
     done
-    
+
     # Ввод и валидация маски
     while true; do
         read -p "Введите маску (CIDR, например, 24): " mask
@@ -212,8 +223,8 @@ fi
             error "Неверный формат маски. Введите число от 0 до 32"
         fi
     done
-    
-    # Ввод и валидация шлюза
+
+    # Ввод и валидация шлюза (с возможностью пропуска)
     read -p "Введите шлюз (оставьте пустым для пропуска): " gateway
     if [[ -n "$gateway" ]]; then
         if ! validate_ip "$gateway"; then
@@ -221,7 +232,7 @@ fi
             gateway=""
         fi
     fi
-    
+
     # Ввод и валидация DNS
     while true; do
         read -p "Введите основной DNS сервер: " dns1
@@ -231,39 +242,37 @@ fi
             error "Неверный формат IP адреса DNS"
         fi
     done
-    
+
     read -p "Введите дополнительный DNS сервер (необязательно, Enter для пропуска): " dns2
     if [[ -n "$dns2" ]] && ! validate_ip "$dns2"; then
         warn "Неверный формат дополнительного DNS, будет использован только основной"
         dns2=""
     fi
-    
+
     log "Применение настроек для интерфейса $selected_interface..."
-    
-    # Применение настроек
+
+    # Очистка текущих настроек
     ip addr flush dev $selected_interface
+    
+    # Применение IP и поднятие интерфейса
     ip addr add ${ip}/${mask} dev $selected_interface
     ip link set $selected_interface up
-    
-    # Удаление старого маршрута по умолчанию и добавление нового
+
+    # Обновление маршрутов
     ip route del default 2>/dev/null
     if [[ -n "$gateway" ]]; then
         ip route add default via "$gateway"
     fi
-        
+
     # Настройка DNS
     echo "nameserver $dns1" > /etc/resolv.conf
     if [[ -n "$dns2" ]]; then
         echo "nameserver $dns2" >> /etc/resolv.conf
     fi
 
-    # Сохранение настроек
+    # Сохранение настроек через systemd-networkd
     save_network_config "$selected_interface" "$ip" "$mask" "$gateway" "$dns1" "$dns2"
-if [[ -n "$dns2" ]]; then
-    echo "DNS=$dns1 $dns2" >> /etc/systemd/network/10-static-$interface.network
-else
-    echo "DNS=$dns1" >> /etc/systemd/network/10-static-$interface.network
-fi
+
     log "Настройка завершена!"
 }
 
