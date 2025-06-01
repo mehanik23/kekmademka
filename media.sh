@@ -6,6 +6,21 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# Примеры популярных доменов
+DOMAIN_EXAMPLES=(
+    "wikipedia.org"
+    "wildberries.ru"
+    "ozon.ru"
+    "custom"
+)
+
+# Пользовательские названия для ссылок
+declare -A LINK_NAMES=(
+    ["wikipedia.org"]="Википедия"
+    ["wildberries.ru"]="Wildberries"
+    ["ozon.ru"]="Ozon"
+)
+
 # Определение пакетного менеджера
 function detect_package_manager() {
     if command -v apt &> /dev/null; then
@@ -40,15 +55,14 @@ function install_apache() {
 function configure_vhost() {
     echo "Настройка виртуального хоста..."
     IP_ADDRESS=$(hostname -I | awk '{print $1}')
-    DOMAIN_NAME=${1:-$IP_ADDRESS}
     
     # Создаем конфиг виртуального хоста
     cat > /etc/apache2/sites-available/000-default.conf << EOF
 <VirtualHost *:80>
-    ServerAdmin admin@$DOMAIN_NAME
+    ServerAdmin admin@$DOMAIN
     DocumentRoot /var/www/html
-    ServerName $DOMAIN_NAME
-    ServerAlias www.$DOMAIN_NAME
+    ServerName $DOMAIN
+    ServerAlias www.$DOMAIN
     <Directory /var/www/html>
         Options Indexes FollowSymLinks
         AllowOverride All
@@ -64,16 +78,16 @@ EOF
 # Создание страницы с редиректом
 function create_website() {
     echo "Создание веб-страницы..."
-    cat > /var/www/html/index.html << 'EOF'
+    cat > /var/www/html/index.html << EOF
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <title>Добро пожаловать</title>
-    <meta http-equiv="refresh" content="0; url='https://www.wildberries.ru'"> 
+    <meta http-equiv="refresh" content="0; url='https://$DOMAIN'"> 
 </head>
 <body>
-    <p>Переход на сайт <a href="https://www.wildberries.ru">Wildberries</a></p> 
+    <p>Переход на сайт <a href="https://$DOMAIN">$LINK_NAME</a></p> 
 </body>
 </html>
 EOF
@@ -94,15 +108,58 @@ function check_server() {
     systemctl restart apache2 || systemctl restart httpd
     
     echo "Проверка доступности сайта:"
-    curl -s http://localhost | grep -i "wildberries" &> /dev/null
+    curl -s http://localhost | grep -i "$LINK_NAME" &> /dev/null
     [[ $? -eq 0 ]] && echo "✓ Сайт работает" || echo "✗ Сайт не доступен"
+}
+
+# Меню выбора домена
+function select_domain() {
+    while true; do
+        clear
+        echo "================ Выбор домена ================"
+        echo "Выберите пример домена или введите свой:"
+        
+        for i in ${!DOMAIN_EXAMPLES[@]}; do
+            echo "$((i+1)). ${DOMAIN_EXAMPLES[$i]}"
+        done
+        
+        read -p "Введите номер (1-${#DOMAIN_EXAMPLES[@]}) или свой домен: " choice
+        
+        if [[ $choice =~ ^[0-9]+$ && $choice -ge 1 && $choice -le ${#DOMAIN_EXAMPLES[@]} ]]; then
+            SELECTED=${DOMAIN_EXAMPLES[$((choice-1))]}
+            
+            if [[ $SELECTED == "custom" ]]; then
+                while true; do
+                    read -p "Введите свой домен (например, wikibebra.org): " CUSTOM_DOMAIN
+                    if [[ $CUSTOM_DOMAIN =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                        DOMAIN=$CUSTOM_DOMAIN
+                        break
+                    else
+                        echo "Неверный формат домена!"
+                    fi
+                done
+            else
+                DOMAIN=$SELECTED
+            fi
+            
+            # Запрашиваем название ссылки
+            read -p "Введите отображаемое название ссылки (по умолчанию: ${LINK_NAMES[$DOMAIN]}): " USER_LINK
+            LINK_NAME=${USER_LINK:-${LINK_NAMES[$DOMAIN]}}
+            
+            return
+        else
+            echo "Неверный выбор!"
+            sleep 2
+        fi
+    done
 }
 
 # Основное меню
 function main_menu() {
     clear
     echo "================ Настройка веб-сервера ================"
-    read -p "Введите доменное имя (или оставьте пустым для использования IP): " DOMAIN
+    select_domain
+    
     echo "1. Настроить веб-сервер"
     echo "2. Выход"
     read -p "Выберите действие (1-2): " choice
@@ -110,11 +167,12 @@ function main_menu() {
     case $choice in
         1)
             install_apache
-            configure_vhost "$DOMAIN"
+            configure_vhost
             create_website
             configure_firewall
             check_server
             echo "Сервер настроен! Доступен по http://$DOMAIN"
+            echo "Сайт будет перенаправлять на https://$DOMAIN  с названием '$LINK_NAME'"
             ;;
         2)
             echo "Выход..."
