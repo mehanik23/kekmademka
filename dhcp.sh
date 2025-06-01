@@ -1,4 +1,4 @@
-#!/bin/bash
+ #!/bin/bash
 
 # Скрипт установки DHCP сервера для Debian 10
 # Используется ISC DHCP Server
@@ -132,8 +132,11 @@ select_interfaces() {
 
 # Основной скрипт начинается здесь
 clear
-print_color $GREEN "=== Скрипт установки DHCP сервера для Debian 10 ==="
+print_color $GREEN "\n=== Скрипт установки DHCP сервера для Debian 10 ==="
 print_color $GREEN "=== Используется ISC DHCP Server ==="
+print_color $YELLOW "=== Значения по умолчанию: ==="
+print_color $YELLOW "    Диапазон: 192.168.100.66 - 192.168.100.78"
+print_color $YELLOW "    Домен: au-team.irpo"
 echo
 
 # Проверка прав root
@@ -313,6 +316,9 @@ max-lease-time 86400;      # 24 часа
 # Глобальные DNS серверы (могут быть переопределены для каждой подсети)
 option domain-name-servers 8.8.8.8, 8.8.4.4;
 
+# Глобальное доменное имя
+option domain-name "au-team.irpo";
+
 EOF
 
 # Настройка каждого интерфейса
@@ -336,8 +342,15 @@ for iface in "${selected_interfaces[@]}"; do
             
             # Предлагаем диапазон по умолчанию
             IFS='.' read -r n1 n2 n3 n4 <<< "$ip_only"
-            suggested_start="$n1.$n2.$n3.100"
-            suggested_end="$n1.$n2.$n3.200"
+            
+            # Специальные значения по умолчанию для сети 192.168.100.x
+            if [[ "$n1" == "192" ]] && [[ "$n2" == "168" ]] && [[ "$n3" == "100" ]]; then
+                suggested_start="192.168.100.66"
+                suggested_end="192.168.100.78"
+            else
+                suggested_start="$n1.$n2.$n3.100"
+                suggested_end="$n1.$n2.$n3.200"
+            fi
             
             print_color $YELLOW "Предлагаемый диапазон: $suggested_start - $suggested_end"
             read -p "Использовать предложенный диапазон? (да/нет): " use_suggested
@@ -444,7 +457,8 @@ for iface in "${selected_interfaces[@]}"; do
         done
         
         while true; do
-            read -p "Введите начальный IP диапазона DHCP: " range_start
+            read -p "Введите начальный IP диапазона DHCP (по умолчанию: 192.168.100.66): " range_start
+            range_start=${range_start:-192.168.100.66}
             if validate_ip $range_start; then
                 break
             else
@@ -453,7 +467,8 @@ for iface in "${selected_interfaces[@]}"; do
         done
         
         while true; do
-            read -p "Введите конечный IP диапазона DHCP: " range_end
+            read -p "Введите конечный IP диапазона DHCP (по умолчанию: 192.168.100.78): " range_end
+            range_end=${range_end:-192.168.100.78}
             if validate_ip $range_end; then
                 break
             else
@@ -494,7 +509,8 @@ for iface in "${selected_interfaces[@]}"; do
     fi
     
     # Запрос доменного имени
-    read -p "Введите доменное имя (необязательно, нажмите Enter для пропуска): " domain_name
+    read -p "Введите доменное имя (по умолчанию: au-team.irpo): " domain_name
+    domain_name=${domain_name:-au-team.irpo}
     
     # Запись конфигурации подсети
     echo "" >> /etc/dhcp/dhcpd.conf
