@@ -1,4 +1,4 @@
-#!/bin/bash
+ #!/bin/bash
 
 # Цвета для вывода
 RED='\033[0;31m'
@@ -149,7 +149,7 @@ EOF
     log "Настройки для интерфейса $interface сохранены и будут применены при перезагрузке."
 }
 
-# Настройка статического IP
+# Настройка статического IP или DHCP
 configure_static_ip() {
     # Проверка и отключение NetworkManager при первой настройке сети
     if systemctl is-active NetworkManager &>/dev/null; then
@@ -175,73 +175,126 @@ configure_static_ip() {
         fi
     done
     
-    # Ввод и валидация IP адреса
-    while true; do
-        read -p "Введите IP адрес: " ip
-        if validate_ip "$ip"; then
-            break
-        else
-            error "Неверный формат IP адреса. Пример: 192.168.1.100"
-        fi
-    done
+    # Выбор типа настройки
+    echo ""
+    info "Выберите тип настройки:"
+    echo "1) Статический IP"
+    echo "2) DHCP клиент"
+    prompt "Ваш выбор (1-2): "
+    read -r config_type
     
-    # Ввод и валидация маски
-    while true; do
-        read -p "Введите маску (CIDR, например, 24): " mask
-        if validate_cidr "$mask"; then
-            break
-        else
-            error "Неверный формат маски. Введите число от 0 до 32"
-        fi
-    done
-    
-    # Ввод и валидация шлюза
-    while true; do
-        read -p "Введите шлюз: " gateway
-        if validate_ip "$gateway"; then
-            break
-        else
-            error "Неверный формат IP адреса шлюза"
-        fi
-    done
-    
-    # Ввод и валидация DNS
-    while true; do
-        read -p "Введите основной DNS сервер: " dns1
-        if validate_ip "$dns1"; then
-            break
-        else
-            error "Неверный формат IP адреса DNS"
-        fi
-    done
-    
-    read -p "Введите дополнительный DNS сервер (необязательно, Enter для пропуска): " dns2
-    if [[ -n "$dns2" ]] && ! validate_ip "$dns2"; then
-        warn "Неверный формат дополнительного DNS, будет использован только основной"
-        dns2=""
-    fi
-    
-    log "Применение настроек для интерфейса $selected_interface..."
-    
-    # Применение настроек
-    ip addr flush dev $selected_interface
-    ip addr add ${ip}/${mask} dev $selected_interface
-    ip link set $selected_interface up
-    
-    # Удаление старого маршрута по умолчанию и добавление нового
-    ip route del default 2>/dev/null
-    ip route add default via $gateway
-    
-    # Настройка DNS
-    echo "nameserver $dns1" > /etc/resolv.conf
-    if [[ -n "$dns2" ]]; then
-        echo "nameserver $dns2" >> /etc/resolv.conf
-    fi
+    if [[ "$config_type" == "2" ]]; then
+        # Настройка DHCP
+        log "Настройка DHCP для интерфейса $selected_interface..."
+        
+        # Создание конфигурации systemd-networkd для DHCP
+        mkdir -p /etc/systemd/network
+        cat > /etc/systemd/network/10-dhcp-$selected_interface.network << EOF
+[Match]
+Name=$selected_interface
 
-    # Сохранение настроек
-    save_network_config "$selected_interface" "$ip" "$mask" "$gateway" "$dns1" "$dns2"
+[Network]
+DHCP=yes
 
-    log "Настройка завершена!"
+[DHCP]
+UseDNS=yes
+UseRoutes=yes
+EOF
+        
+        # Применение настроек
+        ip addr flush dev $selected_interface
+        ip link set $selected_interface up
+        
+        # Включение и перезапуск systemd-networkd
+        systemctl enable systemd-networkd
+        systemctl restart systemd-networkd
+        
+        log "DHCP настроен для интерфейса $selected_interface"
+        info "Ожидание получения IP адреса..."
+        sleep 3
+        
+        # Показать полученный IP
+        new_ip=$(ip -4 addr show $selected_interface | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "ожидание...")
+        if [[ -n "$new_ip" ]] && [[ "$new_ip" != "ожидание..." ]]; then
+            log "Получен IP адрес: $new_ip"
+        else
+            warn "IP адрес еще не получен. Проверьте позже командой: ip addr show $selected_interface"
+        fi
+        
+    elif [[ "$config_type" == "1" ]]; then
+        # Статический IP - существующий код
+    elif [[ "$config_type" == "1" ]]; then
+        # Статический IP - существующий код
+        # Ввод и валидация IP адреса
+        while true; do
+            read -p "Введите IP адрес: " ip
+            if validate_ip "$ip"; then
+                break
+            else
+                error "Неверный формат IP адреса. Пример: 192.168.1.100"
+            fi
+        done
+        
+        # Ввод и валидация маски
+        while true; do
+            read -p "Введите маску (CIDR, например, 24): " mask
+            if validate_cidr "$mask"; then
+                break
+            else
+                error "Неверный формат маски. Введите число от 0 до 32"
+            fi
+        done
+        
+        # Ввод и валидация шлюза
+        while true; do
+            read -p "Введите шлюз: " gateway
+            if validate_ip "$gateway"; then
+                break
+            else
+                error "Неверный формат IP адреса шлюза"
+            fi
+        done
+        
+        # Ввод и валидация DNS
+        while true; do
+            read -p "Введите основной DNS сервер: " dns1
+            if validate_ip "$dns1"; then
+                break
+            else
+                error "Неверный формат IP адреса DNS"
+            fi
+        done
+        
+        read -p "Введите дополнительный DNS сервер (необязательно, Enter для пропуска): " dns2
+        if [[ -n "$dns2" ]] && ! validate_ip "$dns2"; then
+            warn "Неверный формат дополнительного DNS, будет использован только основной"
+            dns2=""
+        fi
+        
+        log "Применение настроек для интерфейса $selected_interface..."
+        
+        # Применение настроек
+        ip addr flush dev $selected_interface
+        ip addr add ${ip}/${mask} dev $selected_interface
+        ip link set $selected_interface up
+        
+        # Удаление старого маршрута по умолчанию и добавление нового
+        ip route del default 2>/dev/null
+        ip route add default via $gateway
+        
+        # Настройка DNS
+        echo "nameserver $dns1" > /etc/resolv.conf
+        if [[ -n "$dns2" ]]; then
+            echo "nameserver $dns2" >> /etc/resolv.conf
+        fi
+
+        # Сохранение настроек
+        save_network_config "$selected_interface" "$ip" "$mask" "$gateway" "$dns1" "$dns2"
+
+        log "Настройка завершена!"
+    else
+        error "Неверный выбор"
+    fi
 }
 
 # Настройка OpenVSwitch
@@ -594,13 +647,11 @@ create_user_menu() {
 
 # SSH подключение
 ssh_connection() {
-    local ssh_user="sshuser"
-    local ssh_ip=""
-    local confirm=""
-
-    # Запрашиваем IP-адрес
+    prompt "Введите имя пользователя для SSH: "
+    read -r ssh_user
+    
     while true; do
-        prompt "Введите IP-адрес для SSH: "
+        prompt "Введите IP адрес для SSH: "
         read -r ssh_ip
         if validate_ip "$ssh_ip"; then
             break
@@ -608,37 +659,9 @@ ssh_connection() {
             error "Неверный формат IP адреса"
         fi
     done
-
-    # Подтверждение использования пользователя sshuser
-    while true; do
-        prompt "Использовать разрешённого пользователя '$ssh_user'? (да/нет): "
-        read -r confirm
-        case "$confirm" in
-            д|да|y|yes|Yes)
-                log "Подтверждено использование пользователя '$ssh_user'"
-                break
-                ;;
-            н|нет|n|no|No)
-                error "Подключение невозможно: доступ разрешён только пользователю '$ssh_user'"
-                return 1
-                ;;
-            *)
-                error "Пожалуйста, введите 'да' или 'нет'"
-                ;;
-        esac
-    done
-
-    # Вывод баннера после подключения
-    log "Подключение к $ssh_user@$ssh_ip:2024 через SSH..."
-    ssh -o ConnectTimeout=10 \
-        -o NumberOfPasswordPrompts=2 \
-        -p 2024 \
-        "${ssh_user}@${ssh_ip}" && {
-        echo -e "\n\e[1;33mAUTHORIZED ACCESS ONLY\e[0m\n"
-    } || {
-        error "Ошибка подключения по SSH"
-        return 1
-    }
+    
+    log "Подключение к $ssh_user@$ssh_ip через SSH..."
+    ssh -o ConnectTimeout=10 "$ssh_user@$ssh_ip"
 }
 
 # Сброс настроек
@@ -744,28 +767,36 @@ reset_settings_menu() {
 
 # Настройка маскарадинга
 configure_masquerade() {
-    get_interfaces
-    echo ""
-    info "Доступные сетевые интерфейсы:"
-    for i in "${!interfaces[@]}"; do
-        echo "  $((i+1))) ${interfaces[$i]}"
-    done
+    # Получаем все интерфейсы
+    all_interfaces=($(ip link show | awk -F: '$0 !~ "lo|^[^0-9]"{print $2}' | sed 's/^ *//'))
     
-    # Также показать OVS VLAN интерфейсы если есть
+    # Добавляем VLAN интерфейсы из OVS если есть
     if command -v ovs-vsctl &> /dev/null; then
-        ovs_interfaces=$(ovs-vsctl list-ifaces $(ovs-vsctl list-br 2>/dev/null) 2>/dev/null | grep -E '^vlan[0-9]+' || true)
-        if [[ -n "$ovs_interfaces" ]]; then
-            info "Доступные VLAN интерфейсы:"
-            echo "$ovs_interfaces"
-            interfaces+=($ovs_interfaces)
+        ovs_bridges=$(ovs-vsctl list-br 2>/dev/null || true)
+        if [[ -n "$ovs_bridges" ]]; then
+            for bridge in $ovs_bridges; do
+                ovs_interfaces=$(ovs-vsctl list-ifaces $bridge 2>/dev/null | grep -E '^vlan[0-9]+' || true)
+                if [[ -n "$ovs_interfaces" ]]; then
+                    for iface in $ovs_interfaces; do
+                        all_interfaces+=("$iface")
+                    done
+                fi
+            done
         fi
     fi
     
+    echo ""
+    info "Доступные сетевые интерфейсы:"
+    for i in "${!all_interfaces[@]}"; do
+        ip_addr=$(ip -4 addr show ${all_interfaces[$i]} 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "нет IP")
+        echo "  $((i+1))) ${all_interfaces[$i]} (IP: $ip_addr)"
+    done
+    
     while true; do
-        prompt "Выберите внешний интерфейс для маскарадинга (1-${#interfaces[@]}): "
+        prompt "Выберите внешний интерфейс для маскарадинга (1-${#all_interfaces[@]}): "
         read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
-            external_interface=${interfaces[$((choice-1))]}
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#all_interfaces[@]} ]]; then
+            external_interface=${all_interfaces[$((choice-1))]}
             break
         else
             error "Неверный выбор"
@@ -773,10 +804,10 @@ configure_masquerade() {
     done
     
     while true; do
-        prompt "Выберите внутренний интерфейс для локальной сети (1-${#interfaces[@]}): "
+        prompt "Выберите внутренний интерфейс для локальной сети (1-${#all_interfaces[@]}): "
         read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
-            internal_interface=${interfaces[$((choice-1))]}
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#all_interfaces[@]} ]]; then
+            internal_interface=${all_interfaces[$((choice-1))]}
             if [[ "$internal_interface" == "$external_interface" ]]; then
                 error "Внутренний и внешний интерфейсы не могут совпадать!"
                 continue
@@ -789,9 +820,20 @@ configure_masquerade() {
     
     log "Настройка IP-форвардинга и маскарадинга..."
     
-    # Включение IP форвардинга
+    # Включение IP форвардинга немедленно
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+    
+    # Включение IP форвардинга на постоянной основе
     echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-ipforward.conf
     sysctl -p /etc/sysctl.d/99-ipforward.conf
+    
+    # Проверка включения форвардинга
+    if [[ $(cat /proc/sys/net/ipv4/ip_forward) != "1" ]]; then
+        error "Не удалось включить IP форвардинг!"
+        return
+    fi
+    
+    log "IP форвардинг включен"
     
     # Проверка установки iptables
     if ! command -v iptables &> /dev/null; then
@@ -800,21 +842,36 @@ configure_masquerade() {
         apt install -y iptables
     fi
     
-    # Очистка старых правил
-    iptables -F
-    iptables -t nat -F
+    # Очистка старых правил NAT (но не всех правил)
+    iptables -t nat -F POSTROUTING
+    iptables -F FORWARD
     
     # Настройка правил маскарадинга
+    log "Добавление правил маскарадинга..."
     iptables -t nat -A POSTROUTING -o $external_interface -j MASQUERADE
     iptables -A FORWARD -i $external_interface -o $internal_interface -m state --state RELATED,ESTABLISHED -j ACCEPT
     iptables -A FORWARD -i $internal_interface -o $external_interface -j ACCEPT
     
+    # Разрешаем форвардинг между интерфейсами
+    iptables -A FORWARD -i $internal_interface -j ACCEPT
+    iptables -A FORWARD -o $internal_interface -j ACCEPT
+    
+    # Установка политики FORWARD на ACCEPT
+    iptables -P FORWARD ACCEPT
+    
     # Установка и сохранение правил iptables
     log "Установка и сохранение правил iptables..."
-    DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
+    if ! command -v netfilter-persistent &> /dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
+    fi
     netfilter-persistent save
     
+    # Проверка правил
+    log "Текущие правила NAT:"
+    iptables -t nat -L POSTROUTING -n -v
+    
     log "Маскарадинг настроен для: $internal_interface -> $external_interface"
+    info "Для проверки используйте: iptables -t nat -L -n -v"
 }
 
 # Проверка интернета
@@ -895,7 +952,7 @@ main_menu() {
     while true; do
         echo ""
         info "===== Главное меню ====="
-        echo "1) Настройка статического IP"
+        echo "1) Настройка IP (статический/DHCP)"
         echo "2) Изменение имени хоста"
         echo "3) Настройка маскарадинга (NAT)"
         echo "4) Проверка интернета"
