@@ -594,7 +594,7 @@ create_user_menu() {
 
 # SSH подключение
 ssh_connection() {
-    # Установлен фиксированный пользователь для подключения
+    # Зафиксируем пользователя как "sshuser"
     local ssh_user="sshuser"
     
     while true; do
@@ -607,8 +607,8 @@ ssh_connection() {
         fi
     done
 
-    # Вывод баннера (локальное сообщение)
-    echo -e "\e[33mAuthorized access only\e[0m"
+    # Выводим баннер перед подключением
+    echo -e "\n\e[1;33mAuthorized access only\e[0m\n"
     
     log "Подключение к $ssh_user@$ssh_ip:2024 через SSH..."
     ssh -o ConnectTimeout=10 \
