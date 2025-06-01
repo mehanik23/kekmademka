@@ -594,9 +594,11 @@ create_user_menu() {
 
 # SSH подключение
 ssh_connection() {
-    # Зафиксируем пользователя как "sshuser"
     local ssh_user="sshuser"
-    
+    local ssh_ip=""
+    local confirm=""
+
+    # Запрашиваем IP-адрес
     while true; do
         prompt "Введите IP-адрес для SSH: "
         read -r ssh_ip
@@ -607,14 +609,36 @@ ssh_connection() {
         fi
     done
 
-    # Выводим баннер перед подключением
-    echo -e "\n\e[1;33mAuthorized access only\e[0m\n"
-    
+    # Подтверждение использования пользователя sshuser
+    while true; do
+        prompt "Использовать разрешённого пользователя '$ssh_user'? (да/нет): "
+        read -r confirm
+        case "$confirm" in
+            д|да|y|yes|Yes)
+                log "Подтверждено использование пользователя '$ssh_user'"
+                break
+                ;;
+            н|нет|n|no|No)
+                error "Подключение невозможно: доступ разрешён только пользователю '$ssh_user'"
+                return 1
+                ;;
+            *)
+                error "Пожалуйста, введите 'да' или 'нет'"
+                ;;
+        esac
+    done
+
+    # Вывод баннера после подключения
     log "Подключение к $ssh_user@$ssh_ip:2024 через SSH..."
     ssh -o ConnectTimeout=10 \
         -o NumberOfPasswordPrompts=2 \
         -p 2024 \
-        "${ssh_user}@${ssh_ip}"
+        "${ssh_user}@${ssh_ip}" && {
+        echo -e "\n\e[1;33mAUTHORIZED ACCESS ONLY\e[0m\n"
+    } || {
+        error "Ошибка подключения по SSH"
+        return 1
+    }
 }
 
 # Сброс настроек
