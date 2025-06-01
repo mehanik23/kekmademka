@@ -24,6 +24,16 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Автоопределение IP сервера
+detect_server_ip() {
+  SERVER_IP=$(hostname -I | awk '{print $1}')
+  if [[ -z "$SERVER_IP" ]]; then
+    error "Не удалось определить IP-адрес сервера!"
+    exit 1
+  fi
+  log "Обнаружен IP сервера: $SERVER_IP"
+}
+
 # Установка bind9 и dnsutils
 install_packages() {
   log "Проверка установленных пакетов..."
@@ -56,8 +66,8 @@ create_forward_zone() {
 @       IN      NS      ns1.$FORWARD_ZONE.
 
 ; A records
-@       IN      A       192.168.100.10
-ns1     IN      A       192.168.100.10
+@       IN      A       $SERVER_IP
+ns1     IN      A       $SERVER_IP
 host1   IN      A       192.168.100.11
 host2   IN      A       192.168.100.12
 EOF
@@ -114,7 +124,7 @@ options {
     forwarders { 77.88.8.8; };
 
     // Listening ports and interfaces
-    listen-on port 53 { 127.0.0.1; 192.168.0.0/26; 192.168.100.64/28; 192.1; };
+    listen-on port 53 { any; };
     listen-on-v6 port 53 { none; };
 
     // Query access
@@ -174,6 +184,23 @@ restart_and_enable_bind() {
   fi
 }
 
+# Установка DNS для всей системы
+setup_resolv_conf() {
+  log "Настройка /etc/resolv.conf для использования локального DNS..."
+  echo "nameserver $SERVER_IP" > /etc/resolv.conf
+}
+
+# Проверка доступности порта 53
+check_dns_port() {
+  log "Проверка, слушает ли BIND порт 53..."
+  if ss -tuln | grep :53 >/dev/null; then
+    log "Порт 53 открыт и прослушивается"
+  else
+    error "Порт 53 не прослушивается! Проверьте named.conf.options"
+    return 1
+  fi
+}
+
 # Тестирование через dig + ping
 test_with_dig_and_ping() {
   prompt "Выполняется тестирование через 'dig' и 'ping'..."
@@ -186,12 +213,6 @@ test_with_dig_and_ping() {
 
   echo -e "\nПинг 192.168.100.11..."
   ping -c 2 192.168.100.11
-}
-
-# Установка DNS для всей системы
-setup_resolv_conf() {
-  log "Настройка /etc/resolv.conf для использования локального DNS..."
-  echo "nameserver 127.0.0.1" > /etc/resolv.conf
 }
 
 # Основное меню
@@ -208,6 +229,7 @@ main_menu() {
     
     case $choice in
       1)
+        detect_server_ip
         install_packages
         create_zone_dir
         create_forward_zone
@@ -217,6 +239,7 @@ main_menu() {
         check_config
         setup_resolv_conf
         restart_and_enable_bind
+        check_dns_port
         test_with_dig_and_ping
         ;;
       2)
