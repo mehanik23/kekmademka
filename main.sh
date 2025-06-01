@@ -737,34 +737,53 @@ reset_settings_menu() {
 
 # Настройка маскарадинга
 configure_masquerade() {
+    # Получение списка сетевых интерфейсов
     get_interfaces
+
     echo ""
     info "Доступные сетевые интерфейсы:"
     for i in "${!interfaces[@]}"; do
         echo "  $((i+1))) ${interfaces[$i]}"
     done
 
-    while true; do
-        prompt "Выберите внутренний интерфейс для локальной сети (1-${#interfaces[@]}): "
-        read -r choice
+    # Предлагаем выбрать внешний интерфейс для маскарадинга
+    prompt "Выберите внешний интерфейс для маскарадинга (по умолчанию: ens3): "
+    read -r choice
+
+    if [[ -z "$choice" || "$choice" == "ens3" ]]; then
+        external_interface="ens3"
+        if ! check_interface_state "ens3"; then
+            warn "Интерфейс ens3 не найден. Выберите другой:"
+            select_interface_loop:
+            while true; do
+                read -r choice
+                if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
+                    external_interface=${interfaces[$((choice-1))]}
+                    break
+                else
+                    error "Неверный выбор"
+                fi
+            done
+        fi
+    else
         if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#interfaces[@]} ]]; then
-            internal_interface=${interfaces[$((choice-1))]}
-            break
+            external_interface=${interfaces[$((choice-1))]}
         else
             error "Неверный выбор"
+            return
         fi
-    done
+    fi
 
-    log "Настройка IP-форвардинга и маскарадинга для всех интерфейсов..."
-    
+    log "Настройка IP-форвардинга и маскарадинга для интерфейса: $external_interface..."
+
     # Включение IP форвардинга
     echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-ipforward.conf
     sysctl -p /etc/sysctl.d/99-ipforward.conf
 
-    # Проверка установки iptables
+    # Проверка наличия iptables
     if ! command -v iptables &> /dev/null; then
         log "Установка iptables..."
-        apt update
+        apt update -y
         apt install -y iptables
     fi
 
@@ -772,19 +791,20 @@ configure_masquerade() {
     iptables -F
     iptables -t nat -F
 
-    # Маскарадинг для всех исходящих пакетов
-    iptables -t nat -A POSTROUTING -j MASQUERADE
+    # Настройка маскарадинга только для указанного внешнего интерфейса
+    iptables -t nat -A POSTROUTING -o "$external_interface" -j MASQUERADE
 
     # Разрешение трафика внутри локальной сети
-    iptables -A FORWARD -i "$internal_interface" -j ACCEPT
+    iptables -A FORWARD -i "$external_interface" -j ACCEPT
     iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
-    # Установка и сохранение правил iptables
+    # Установка и сохранение правил с использованием netfilter-persistent
     log "Установка и сохранение правил iptables..."
+    apt update -y
     DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
     netfilter-persistent save
 
-    log "Маскарадинг настроен для интерфейса: $internal_interface (весь исходящий трафик)"
+    log "Маскарадинг настроен для интерфейса: $external_interface"
 }
 # Проверка интернета
 test_internet_connection() {
