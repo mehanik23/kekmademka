@@ -594,11 +594,11 @@ create_user_menu() {
 
 # SSH подключение
 ssh_connection() {
-    prompt "Введите имя пользователя для SSH: "
-    read -r ssh_user
+    # Установлен фиксированный пользователь для подключения
+    local ssh_user="sshuser"
     
     while true; do
-        prompt "Введите IP адрес для SSH: "
+        prompt "Введите IP-адрес для SSH: "
         read -r ssh_ip
         if validate_ip "$ssh_ip"; then
             break
@@ -606,9 +606,15 @@ ssh_connection() {
             error "Неверный формат IP адреса"
         fi
     done
+
+    # Вывод баннера (локальное сообщение)
+    echo -e "\e[33mAuthorized access only\e[0m"
     
-    log "Подключение к $ssh_user@$ssh_ip через SSH..."
-    ssh -o ConnectTimeout=10 "$ssh_user@$ssh_ip"
+    log "Подключение к $ssh_user@$ssh_ip:2024 через SSH..."
+    ssh -o ConnectTimeout=10 \
+        -o NumberOfPasswordPrompts=2 \
+        -p 2024 \
+        "${ssh_user}@${ssh_ip}"
 }
 
 # Сброс настроек
