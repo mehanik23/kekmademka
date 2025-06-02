@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Порванный проверяющий
+# ВТОРОЙ МОДУЛЬ
 # Скрипт для настройки системы
 
 # Цвета для красивого вывода
@@ -8,13 +8,14 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
 NC='\033[0m' # No Color
 
 # Функция для отображения заголовка
 show_header() {
     clear
     echo -e "${BLUE}=====================================${NC}"
-    echo -e "${GREEN}    ПОРВАННЫЙ ПРОВЕРЯЮЩИЙ${NC}"
+    echo -e "${GREEN}       ВТОРОЙ МОДУЛЬ${NC}"
     echo -e "${BLUE}=====================================${NC}"
     echo ""
 }
@@ -67,82 +68,168 @@ EOF
     read -p "Нажмите Enter для продолжения..."
 }
 
-# Функция настройки временной зоны и SELinux
-setup_timezone_selinux() {
+# Функция настройки временной зоны
+setup_timezone() {
     show_header
-    echo -e "${YELLOW}=== Настройка временной зоны и SELinux ===${NC}"
+    echo -e "${YELLOW}=== Настройка временной зоны ===${NC}"
     echo ""
     
-    # Настройка временной зоны
-    echo -e "${GREEN}1. Настройка временной зоны${NC}"
     echo "Текущая временная зона:"
-    timedatectl | grep "Time zone" || echo "Не удалось определить"
+    if command -v timedatectl &> /dev/null; then
+        timedatectl | grep "Time zone" || echo "Не удалось определить"
+    else
+        echo "timedatectl не найден"
+    fi
     echo ""
     
     echo "Доступные варианты:"
-    echo "1) Asia/Krasnoyarsk"
-    echo "2) Europe/Moscow"
-    echo "3) Asia/Novosibirsk"
-    echo "4) Другая"
+    echo "1) Asia/Krasnoyarsk (Красноярск)"
+    echo "2) Europe/Moscow (Москва)"
+    echo "3) Asia/Novosibirsk (Новосибирск)"
+    echo "4) Asia/Yekaterinburg (Екатеринбург)"
+    echo "5) Asia/Vladivostok (Владивосток)"
+    echo "6) Другая"
     
-    read -p "Выберите вариант (1-4): " tz_choice
+    read -p "Выберите вариант (1-6): " tz_choice
     
     case $tz_choice in
         1) timezone="Asia/Krasnoyarsk";;
         2) timezone="Europe/Moscow";;
         3) timezone="Asia/Novosibirsk";;
-        4) read -p "Введите временную зону: " timezone;;
+        4) timezone="Asia/Yekaterinburg";;
+        5) timezone="Asia/Vladivostok";;
+        6) read -p "Введите временную зону: " timezone;;
         *) timezone="Asia/Krasnoyarsk";;
     esac
     
     if [ "$EUID" -eq 0 ]; then
-        timedatectl set-timezone $timezone
-        echo -e "${GREEN}Временная зона установлена: $timezone${NC}"
+        if command -v timedatectl &> /dev/null; then
+            timedatectl set-timezone $timezone
+            echo -e "${GREEN}Временная зона установлена: $timezone${NC}"
+        else
+            # Альтернативный метод
+            ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
+            echo $timezone > /etc/timezone
+            echo -e "${GREEN}Временная зона установлена: $timezone${NC}"
+        fi
     else
         echo -e "${YELLOW}Команда для установки временной зоны:${NC}"
         echo "sudo timedatectl set-timezone $timezone"
     fi
     
     echo ""
-    echo -e "${GREEN}2. Настройка SELinux${NC}"
-    echo "Текущий статус SELinux:"
+    read -p "Нажмите Enter для продолжения..."
+}
+
+# Функция настройки SELinux
+setup_selinux() {
+    show_header
+    echo -e "${YELLOW}=== Настройка SELinux ===${NC}"
+    echo ""
     
-    if command -v getenforce &> /dev/null; then
-        getenforce
+    # Проверка наличия SELinux
+    echo "Проверка состояния SELinux..."
+    
+    if ! command -v getenforce &> /dev/null; then
+        echo -e "${YELLOW}SELinux не установлен в системе${NC}"
+        echo ""
+        
+        if [ "$EUID" -eq 0 ]; then
+            read -p "Установить SELinux? (y/n): " install_selinux
+            
+            if [ "$install_selinux" = "y" ]; then
+                echo -e "${GREEN}Установка SELinux...${NC}"
+                
+                # Определение дистрибутива
+                if [ -f /etc/redhat-release ]; then
+                    # RHEL/CentOS/Fedora
+                    yum install -y selinux-policy selinux-policy-targeted policycoreutils
+                elif [ -f /etc/debian_version ]; then
+                    # Debian/Ubuntu
+                    apt-get update
+                    apt-get install -y selinux-basics selinux-policy-default auditd
+                    selinux-activate
+                else
+                    echo -e "${RED}Неподдерживаемый дистрибутив${NC}"
+                fi
+                
+                echo -e "${YELLOW}Требуется перезагрузка для активации SELinux${NC}"
+            fi
+        else
+            echo -e "${YELLOW}Для установки SELinux выполните скрипт с правами root${NC}"
+        fi
     else
-        echo "SELinux не установлен"
+        echo "Текущий статус SELinux: $(getenforce)"
     fi
     
     echo ""
-    echo "Выберите режим SELinux:"
-    echo "1) Enforcing (принудительный)"
-    echo "2) Permissive (разрешающий)"
-    echo "3) Disabled (отключен)"
+    echo -e "${PURPLE}=== Описание режимов SELinux ===${NC}"
+    echo ""
+    echo -e "${GREEN}1) Enforcing (Принудительный)${NC}"
+    echo "   - SELinux активен и блокирует запрещенные действия"
+    echo "   - Все нарушения политики безопасности блокируются и логируются"
+    echo "   - Рекомендуется для production-серверов"
+    echo ""
+    echo -e "${YELLOW}2) Permissive (Разрешающий)${NC}"
+    echo "   - SELinux активен, но НЕ блокирует действия"
+    echo "   - Только логирует нарушения политики безопасности"
+    echo "   - Используется для отладки и тестирования"
+    echo ""
+    echo -e "${RED}3) Disabled (Отключен)${NC}"
+    echo "   - SELinux полностью отключен"
+    echo "   - Никакой защиты и логирования не происходит"
+    echo "   - НЕ рекомендуется для production-серверов"
+    echo ""
     
-    read -p "Выберите вариант (1-3): " selinux_choice
-    
-    case $selinux_choice in
-        1) selinux_mode="enforcing";;
-        2) selinux_mode="permissive";;
-        3) selinux_mode="disabled";;
-        *) selinux_mode="enforcing";;
-    esac
-    
-    if [ "$EUID" -eq 0 ]; then
-        if command -v setenforce &> /dev/null; then
+    if command -v getenforce &> /dev/null; then
+        echo "Выберите режим SELinux:"
+        echo "1) Enforcing"
+        echo "2) Permissive"
+        echo "3) Disabled"
+        echo "4) Не менять"
+        
+        read -p "Ваш выбор (1-4): " selinux_choice
+        
+        case $selinux_choice in
+            1) selinux_mode="enforcing";;
+            2) selinux_mode="permissive";;
+            3) selinux_mode="disabled";;
+            4) 
+                echo "Настройки SELinux не изменены"
+                read -p "Нажмите Enter для продолжения..."
+                return
+                ;;
+            *) selinux_mode="enforcing";;
+        esac
+        
+        if [ "$EUID" -eq 0 ]; then
+            # Временное изменение
             case $selinux_mode in
-                "enforcing") setenforce 1;;
-                "permissive") setenforce 0;;
+                "enforcing") 
+                    setenforce 1 2>/dev/null || echo "Невозможно установить enforcing (возможно, SELinux отключен)"
+                    ;;
+                "permissive") 
+                    setenforce 0 2>/dev/null || echo "Невозможно установить permissive (возможно, SELinux отключен)"
+                    ;;
             esac
             
-            # Изменение конфигурации
-            sed -i "s/^SELINUX=.*/SELINUX=$selinux_mode/" /etc/selinux/config
-            echo -e "${GREEN}SELinux настроен в режим: $selinux_mode${NC}"
+            # Постоянное изменение
+            if [ -f /etc/selinux/config ]; then
+                sed -i "s/^SELINUX=.*/SELINUX=$selinux_mode/" /etc/selinux/config
+                echo -e "${GREEN}SELinux настроен в режим: $selinux_mode${NC}"
+                
+                if [ "$selinux_mode" = "disabled" ]; then
+                    echo -e "${YELLOW}Требуется перезагрузка для полного отключения SELinux${NC}"
+                fi
+            else
+                echo -e "${RED}Файл конфигурации SELinux не найден${NC}"
+            fi
         else
-            echo -e "${YELLOW}SELinux не установлен в системе${NC}"
+            echo -e "${YELLOW}Требуются права root для изменения SELinux${NC}"
+            echo "Команды для изменения:"
+            echo "sudo setenforce 0/1  # временное изменение"
+            echo "sudo sed -i 's/^SELINUX=.*/SELINUX=$selinux_mode/' /etc/selinux/config  # постоянное"
         fi
-    else
-        echo -e "${YELLOW}Требуются права root для изменения SELinux${NC}"
     fi
     
     echo ""
@@ -191,6 +278,8 @@ setup_users() {
     echo ""
     echo -e "${GREEN}3. Настройка ограниченных прав${NC}"
     echo "Создание ограниченной оболочки для пользователей..."
+    echo "Разрешенные команды: grep, cat, id"
+    echo ""
     
     # Создание скрипта ограниченной оболочки
     restricted_shell="/usr/local/bin/restricted_shell.sh"
@@ -268,18 +357,20 @@ main_menu() {
         echo "Выберите действие:"
         echo ""
         echo "1) Настройка GRE туннеля"
-        echo "2) Временные зоны и SELinux"
-        echo "3) Юзеры+"
-        echo "4) Выход"
+        echo "2) Настройка временной зоны"
+        echo "3) Настройка SELinux"
+        echo "4) Юзеры+"
+        echo "5) Выход"
         echo ""
         
-        read -p "Ваш выбор (1-4): " choice
+        read -p "Ваш выбор (1-5): " choice
         
         case $choice in
             1) setup_gre_tunnel;;
-            2) setup_timezone_selinux;;
-            3) setup_users;;
-            4) 
+            2) setup_timezone;;
+            3) setup_selinux;;
+            4) setup_users;;
+            5) 
                 echo -e "${GREEN}До свидания!${NC}"
                 exit 0
                 ;;
