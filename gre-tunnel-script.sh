@@ -59,7 +59,7 @@ configure_gre_hq() {
   sysctl -p /etc/sysctl.d/99-forwarding.conf
   
   # Создание GRE туннеля
-  cat > /etc/network/interfaces.d/gre0 << EOF
+  cat > /etc/network/interfaces.d/gre0 << 'EOF'
 # GRE Tunnel HQ-RTR to BR-RTR
 auto gre0
 iface gre0 inet static
@@ -87,7 +87,7 @@ configure_gre_br() {
   sysctl -p /etc/sysctl.d/99-forwarding.conf
   
   # Создание GRE туннеля
-  cat > /etc/network/interfaces.d/gre0 << EOF
+  cat > /etc/network/interfaces.d/gre0 << 'EOF'
 # GRE Tunnel BR-RTR to HQ-RTR
 auto gre0
 iface gre0 inet static
@@ -110,10 +110,7 @@ EOF
 install_frr() {
   log "Установка FRR для OSPF..."
   
-  # Добавление репозитория FRR
-  curl -s https://deb.frrouting.org/frr/keys.asc | apt-key add -
-  echo "deb https://deb.frrouting.org/frr $(lsb_release -s -c) frr-stable" > /etc/apt/sources.list.d/frr.list
-  
+  # Установка FRR через пакетный менеджер
   apt update
   apt install -y frr frr-pythontools
   
@@ -128,7 +125,7 @@ install_frr() {
 configure_ospf_hq() {
   log "Настройка OSPF на HQ-RTR..."
   
-  cat > /etc/frr/frr.conf << EOF
+  cat > /etc/frr/frr.conf << 'EOF'
 frr version 8.1
 frr defaults traditional
 hostname HQ-RTR
@@ -154,7 +151,7 @@ EOF
 configure_ospf_br() {
   log "Настройка OSPF на BR-RTR..."
   
-  cat > /etc/frr/frr.conf << EOF
+  cat > /etc/frr/frr.conf << 'EOF'
 frr version 8.1
 frr defaults traditional
 hostname BR-RTR
@@ -222,7 +219,7 @@ configure_iptables_hq() {
   iptables -t nat -A POSTROUTING -o eth0 -s 192.168.100.0/24 -j MASQUERADE
   
   # Установка iptables-persistent для сохранения правил
-  apt install -y iptables-persistent
+  DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
   
   # Сохранение правил
   iptables-save > /etc/iptables/rules.v4
@@ -275,7 +272,7 @@ configure_iptables_br() {
   iptables -t nat -A POSTROUTING -o eth0 -s 192.168.200.0/24 -j MASQUERADE
   
   # Установка iptables-persistent для сохранения правил
-  apt install -y iptables-persistent
+  DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
   
   # Сохранение правил
   iptables-save > /etc/iptables/rules.v4
@@ -416,7 +413,9 @@ main_menu() {
         ;;
     esac
     
-    read -p 
+    read -p $'\nНажмите Enter для продолжения...'
+  done
+}
 
 # Запуск меню
 echo -e "${BLUE}========================================${NC}"
@@ -427,12 +426,4 @@ echo -e "${YELLOW}  eth0 - внешний интерфейс (к ISP)${NC}"
 echo -e "${YELLOW}  eth1 - внутренний интерфейс (локальная сеть)${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
-main_menu\nНажмите Enter для продолжения...'
-  done
-}
-
-# Запуск меню
-echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}   Скрипт настройки GRE туннеля и OSPF${NC}"
-echo -e "${BLUE}========================================${NC}"
 main_menu
