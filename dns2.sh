@@ -111,6 +111,9 @@ $HQ_SRV_LAST    IN      PTR     hq-srv.$FORWARD_ZONE.
 $HQ_RTR_LAST    IN      PTR     hq-rtr.$FORWARD_ZONE.
 $HQ_CLI_LAST    IN      PTR     hq-cli.$FORWARD_ZONE.
 EOF
+  log "Создан файл обратной зоны HQ: $REVERSE_FILE_HQ"
+}
+
 # Создание файла обратной зоны для подсети BR
 create_reverse_zone_br() {
   # Извлекаем последний октет из IP-адресов
