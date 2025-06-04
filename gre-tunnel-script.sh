@@ -18,21 +18,36 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Определение роли устройства
-get_device_role() {
-  hostname=$(hostname)
-  case $hostname in
-    HQ-RTR|hq-rtr)
-      echo "HQ-RTR"
-      ;;
-    BR-RTR|br-rtr)
-      echo "BR-RTR"
-      ;;
-    *)
-      error "Неизвестное устройство: $hostname"
-      exit 1
-      ;;
-  esac
+# Глобальная переменная для роли устройства
+DEVICE_ROLE=""
+
+# Выбор роли устройства
+select_device_role() {
+  echo -e "${BLUE}========================================${NC}"
+  echo -e "${BLUE}      Выберите устройство для настройки${NC}"
+  echo -e "${BLUE}========================================${NC}"
+  echo "1. HQ-RTR (Главный офис)"
+  echo "2. BR-RTR (Филиал)"
+  echo -e "${BLUE}========================================${NC}"
+  
+  while true; do
+    read -p "Выберите устройство (1-2): " choice
+    case $choice in
+      1)
+        DEVICE_ROLE="HQ-RTR"
+        log "Выбрано устройство: HQ-RTR"
+        break
+        ;;
+      2)
+        DEVICE_ROLE="BR-RTR"
+        log "Выбрано устройство: BR-RTR"
+        break
+        ;;
+      *)
+        error "Неверный выбор! Пожалуйста, выберите 1 или 2."
+        ;;
+    esac
+  done
 }
 
 # Настройка GRE туннеля для HQ-RTR
@@ -206,6 +221,9 @@ configure_iptables_hq() {
   # NAT для доступа в интернет
   iptables -t nat -A POSTROUTING -o eth0 -s 192.168.100.0/24 -j MASQUERADE
   
+  # Установка iptables-persistent для сохранения правил
+  apt install -y iptables-persistent
+  
   # Сохранение правил
   iptables-save > /etc/iptables/rules.v4
   
@@ -256,10 +274,25 @@ configure_iptables_br() {
   # NAT для доступа в интернет
   iptables -t nat -A POSTROUTING -o eth0 -s 192.168.200.0/24 -j MASQUERADE
   
+  # Установка iptables-persistent для сохранения правил
+  apt install -y iptables-persistent
+  
   # Сохранение правил
   iptables-save > /etc/iptables/rules.v4
   
   log "Правила iptables настроены"
+}
+
+# Проверка сетевых интерфейсов
+check_interfaces() {
+  log "Текущие сетевые интерфейсы:"
+  echo ""
+  ip -br addr show
+  echo ""
+  log "Проверьте соответствие:"
+  echo "  - eth0 должен иметь IP из сети ISP (172.16.x.x)"
+  echo "  - eth1 должен иметь IP из локальной сети (192.168.x.x)"
+  echo ""
 }
 
 # Проверка GRE туннеля
@@ -271,8 +304,7 @@ check_gre_tunnel() {
     ip addr show gre0
     
     # Проверка связности
-    device_role=$(get_device_role)
-    if [ "$device_role" = "HQ-RTR" ]; then
+    if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
       ping -c 3 10.0.0.2
     else
       ping -c 3 10.0.0.1
@@ -297,12 +329,18 @@ check_ospf() {
 
 # Главное меню
 main_menu() {
-  device_role=$(get_device_role)
+  # Выбор устройства при первом запуске
+  select_device_role
+  
+  # Показать текущие интерфейсы
+  echo ""
+  check_interfaces
+  read -p "Нажмите Enter для продолжения..."
   
   while true; do
     clear
     echo "=========================================="
-    echo "   Настройка GRE и OSPF для $device_role"
+    echo "   Настройка GRE и OSPF для $DEVICE_ROLE"
     echo "=========================================="
     echo "1. Полная настройка (GRE + OSPF + Firewall)"
     echo "2. Настроить только GRE туннель"
@@ -311,14 +349,16 @@ main_menu() {
     echo "5. Проверить GRE туннель"
     echo "6. Проверить OSPF"
     echo "7. Показать текущие маршруты"
-    echo "8. Выход"
+    echo "8. Показать сетевые интерфейсы"
+    echo "9. Сменить устройство"
+    echo "0. Выход"
     echo "=========================================="
     
-    read -p "Выберите пункт меню (1-8): " choice
+    read -p "Выберите пункт меню: " choice
     
     case $choice in
       1)
-        if [ "$device_role" = "HQ-RTR" ]; then
+        if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
           configure_gre_hq
           install_frr
           configure_ospf_hq
@@ -331,7 +371,7 @@ main_menu() {
         fi
         ;;
       2)
-        if [ "$device_role" = "HQ-RTR" ]; then
+        if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
           configure_gre_hq
         else
           configure_gre_br
@@ -339,14 +379,14 @@ main_menu() {
         ;;
       3)
         install_frr
-        if [ "$device_role" = "HQ-RTR" ]; then
+        if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
           configure_ospf_hq
         else
           configure_ospf_br
         fi
         ;;
       4)
-        if [ "$device_role" = "HQ-RTR" ]; then
+        if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
           configure_iptables_hq
         else
           configure_iptables_br
@@ -362,6 +402,12 @@ main_menu() {
         ip route show
         ;;
       8)
+        ip addr show
+        ;;
+      9)
+        select_device_role
+        ;;
+      0)
         echo "Выход..."
         exit 0
         ;;
@@ -370,7 +416,18 @@ main_menu() {
         ;;
     esac
     
-    read -p $'\nНажмите Enter для продолжения...'
+    read -p 
+
+# Запуск меню
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}   Скрипт настройки GRE туннеля и OSPF${NC}"
+echo -e "${BLUE}========================================${NC}"
+echo -e "${YELLOW}ВАЖНО: Убедитесь, что интерфейсы настроены:${NC}"
+echo -e "${YELLOW}  eth0 - внешний интерфейс (к ISP)${NC}"
+echo -e "${YELLOW}  eth1 - внутренний интерфейс (локальная сеть)${NC}"
+echo -e "${BLUE}========================================${NC}"
+echo ""
+main_menu\nНажмите Enter для продолжения...'
   done
 }
 
