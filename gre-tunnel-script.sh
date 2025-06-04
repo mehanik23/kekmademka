@@ -101,10 +101,15 @@ Name=gre0
 
 [Network]
 Address=10.0.0.1/30
+IPForward=yes
+
+[Link]
+MTUBytes=1476
 
 [Route]
 Destination=192.168.200.0/24
 Gateway=10.0.0.2
+Scope=link
 EOF
   
   # Перезапуск systemd-networkd
@@ -112,6 +117,17 @@ EOF
   
   # Ожидание поднятия интерфейса
   sleep 3
+  
+  # Дополнительная настройка интерфейса
+  ip link set gre0 up
+  
+  # Проверка и исправление MTU
+  ip link set gre0 mtu 1476
+  
+  # Убедимся, что маршрут к удаленной сети добавлен
+  if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
+    ip route add 192.168.200.0/24 via 10.0.0.2 dev gre0 2>/dev/null
+  fi
   
   # Проверка статуса
   if ip link show gre0 &>/dev/null; then
@@ -167,10 +183,15 @@ Name=gre0
 
 [Network]
 Address=10.0.0.2/30
+IPForward=yes
+
+[Link]
+MTUBytes=1476
 
 [Route]
 Destination=192.168.100.0/24
 Gateway=10.0.0.1
+Scope=link
 EOF
   
   # Перезапуск systemd-networkd
@@ -178,6 +199,17 @@ EOF
   
   # Ожидание поднятия интерфейса
   sleep 3
+  
+  # Дополнительная настройка интерфейса
+  ip link set gre0 up
+  
+  # Проверка и исправление MTU
+  ip link set gre0 mtu 1476
+  
+  # Убедимся, что маршрут к удаленной сети добавлен
+  if [ "$DEVICE_ROLE" = "BR-RTR" ]; then
+    ip route add 192.168.100.0/24 via 10.0.0.1 dev gre0 2>/dev/null
+  fi
   
   # Проверка статуса
   if ip link show gre0 &>/dev/null; then
@@ -415,10 +447,28 @@ check_and_setup_external_ips() {
       warn "Текущий IP адрес ($current_ip) не соответствует ожидаемому (172.16.4.2)"
       echo "Для корректной работы GRE туннеля рекомендуется использовать IP 172.16.4.2"
     fi
+    
+    # Проверка связности с BR-RTR
+    log "Проверка связности с BR-RTR (172.16.5.2)..."
+    if ping -c 2 -W 2 172.16.5.2 &>/dev/null; then
+      log "Связь с BR-RTR установлена"
+    else
+      warn "Нет связи с BR-RTR (172.16.5.2)"
+      echo "Проверьте настройки маршрутизации и firewall"
+    fi
   else
     if [[ "$current_ip" != "172.16.5.2" ]]; then
       warn "Текущий IP адрес ($current_ip) не соответствует ожидаемому (172.16.5.2)"
       echo "Для корректной работы GRE туннеля рекомендуется использовать IP 172.16.5.2"
+    fi
+    
+    # Проверка связности с HQ-RTR
+    log "Проверка связности с HQ-RTR (172.16.4.2)..."
+    if ping -c 2 -W 2 172.16.4.2 &>/dev/null; then
+      log "Связь с HQ-RTR установлена"
+    else
+      warn "Нет связи с HQ-RTR (172.16.4.2)"
+      echo "Проверьте настройки маршрутизации и firewall"
     fi
   fi
   
@@ -507,6 +557,122 @@ check_ospf() {
   fi
 }
 
+# Исправление проблем с GRE туннелем
+fix_gre_tunnel() {
+  log "Исправление проблем с GRE туннелем..."
+  
+  # Проверка наличия интерфейса
+  if ! ip link show gre0 &>/dev/null; then
+    error "GRE туннель не найден. Сначала настройте туннель."
+    return 1
+  fi
+  
+  # Принудительное поднятие интерфейса
+  log "Поднятие интерфейса gre0..."
+  ip link set gre0 up
+  
+  # Установка корректного MTU
+  log "Установка MTU 1476..."
+  ip link set gre0 mtu 1476
+  
+  # Перенастройка IP адреса
+  if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
+    log "Перенастройка IP адреса 10.0.0.1/30..."
+    ip addr flush dev gre0
+    ip addr add 10.0.0.1/30 dev gre0
+    
+    # Добавление маршрута
+    log "Добавление маршрута к 192.168.200.0/24..."
+    ip route del 192.168.200.0/24 2>/dev/null
+    ip route add 192.168.200.0/24 via 10.0.0.2 dev gre0
+  else
+    log "Перенастройка IP адреса 10.0.0.2/30..."
+    ip addr flush dev gre0
+    ip addr add 10.0.0.2/30 dev gre0
+    
+    # Добавление маршрута
+    log "Добавление маршрута к 192.168.100.0/24..."
+    ip route del 192.168.100.0/24 2>/dev/null
+    ip route add 192.168.100.0/24 via 10.0.0.1 dev gre0
+  fi
+  
+  # Проверка и исправление прав на протокол GRE
+  log "Проверка firewall для GRE протокола..."
+  iptables -I INPUT -p gre -j ACCEPT 2>/dev/null
+  iptables -I FORWARD -i gre0 -j ACCEPT 2>/dev/null
+  iptables -I FORWARD -o gre0 -j ACCEPT 2>/dev/null
+  
+  # Проверка маршрута к удаленному концу туннеля
+  if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
+    local remote_ip="172.16.5.2"
+  else
+    local remote_ip="172.16.4.2"
+  fi
+  
+  log "Проверка маршрута к $remote_ip..."
+  if ! ip route get $remote_ip &>/dev/null; then
+    error "Нет маршрута к удаленному концу туннеля $remote_ip"
+    echo "Проверьте настройки маршрутизации на внешнем интерфейсе"
+  fi
+  
+  # Отключение rp_filter для GRE
+  log "Отключение rp_filter для gre0..."
+  echo 0 > /proc/sys/net/ipv4/conf/gre0/rp_filter
+  echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
+  
+  log "Исправления применены. Проверьте работу туннеля."
+}
+
+# Быстрое тестирование GRE
+quick_gre_test() {
+  echo ""
+  log "Быстрое тестирование GRE туннеля"
+  echo -e "${YELLOW}=========================================${NC}"
+  
+  # Тест 1: Проверка интерфейса
+  echo -e "${CYAN}1. Состояние интерфейса gre0:${NC}"
+  ip link show gre0 2>/dev/null || echo "Интерфейс не существует"
+  echo ""
+  
+  # Тест 2: IP адрес
+  echo -e "${CYAN}2. IP адрес gre0:${NC}"
+  ip addr show gre0 2>/dev/null | grep inet || echo "IP не назначен"
+  echo ""
+  
+  # Тест 3: Пинг локального конца туннеля
+  echo -e "${CYAN}3. Пинг локального адреса туннеля:${NC}"
+  if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
+    ping -c 1 -W 1 10.0.0.1 || echo "Ошибка пинга локального адреса"
+  else
+    ping -c 1 -W 1 10.0.0.2 || echo "Ошибка пинга локального адреса"
+  fi
+  echo ""
+  
+  # Тест 4: Пинг удаленного конца туннеля
+  echo -e "${CYAN}4. Пинг удаленного конца туннеля:${NC}"
+  if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
+    ping -c 1 -W 2 10.0.0.2 || echo "Ошибка пинга удаленного адреса"
+  else
+    ping -c 1 -W 2 10.0.0.1 || echo "Ошибка пинга удаленного адреса"
+  fi
+  echo ""
+  
+  # Тест 5: Проверка MTU
+  echo -e "${CYAN}5. MTU интерфейса gre0:${NC}"
+  ip link show gre0 2>/dev/null | grep -oP 'mtu \K\d+' || echo "Не удалось определить MTU"
+  echo ""
+  
+  # Тест 6: Проверка firewall для GRE
+  echo -e "${CYAN}6. Проверка iptables для GRE:${NC}"
+  iptables -L INPUT -n | grep -q "gre" && echo "GRE разрешен в INPUT" || echo "GRE не найден в INPUT"
+  echo ""
+  
+  echo -e "${YELLOW}=========================================${NC}"
+  echo ""
+  echo "Если все тесты прошли успешно, туннель должен работать."
+  echo "Если есть ошибки, используйте пункт 10 для исправления."
+}
+
 # Отладка systemd-networkd
 debug_networkd() {
   log "Отладка systemd-networkd..."
@@ -551,13 +717,15 @@ main_menu() {
     echo -e "${GREEN}2.${NC} Настроить только GRE туннель"
     echo -e "${GREEN}3.${NC} Настроить только OSPF"
     echo -e "${GREEN}4.${NC} Настроить только Firewall"
-    echo -e "${GREEN}5.${NC} Проверить GRE туннель"
-    echo -e "${GREEN}6.${NC} Проверить OSPF"
-    echo -e "${GREEN}7.${NC} Показать текущие маршруты"
-    echo -e "${GREEN}8.${NC} Показать сетевые интерфейсы"
-    echo -e "${GREEN}9.${NC} Удалить GRE туннель"
-    echo -e "${GREEN}10.${NC} Отладка systemd-networkd"
-    echo -e "${GREEN}11.${NC} Сменить устройство"
+    echo -e "${GREEN}5.${NC} Проверить GRE туннель (подробно)"
+    echo -e "${GREEN}6.${NC} Быстрый тест GRE"
+    echo -e "${GREEN}7.${NC} Проверить OSPF"
+    echo -e "${GREEN}8.${NC} Показать текущие маршруты"
+    echo -e "${GREEN}9.${NC} Показать сетевые интерфейсы"
+    echo -e "${GREEN}10.${NC} Исправить проблемы с GRE"
+    echo -e "${GREEN}11.${NC} Удалить GRE туннель"
+    echo -e "${GREEN}12.${NC} Отладка systemd-networkd"
+    echo -e "${GREEN}13.${NC} Сменить устройство"
     echo -e "${GREEN}0.${NC} Выход"
     echo -e "${BGREEN}=========================================${NC}"
     
@@ -607,21 +775,27 @@ main_menu() {
         check_gre_tunnel
         ;;
       6)
-        check_ospf
+        quick_gre_test
         ;;
       7)
-        ip route show
+        check_ospf
         ;;
       8)
-        ip addr show
+        ip route show
         ;;
       9)
-        remove_gre_tunnel
+        ip addr show
         ;;
       10)
-        debug_networkd
+        fix_gre_tunnel
         ;;
       11)
+        remove_gre_tunnel
+        ;;
+      12)
+        debug_networkd
+        ;;
+      13)
         select_device_role
         ;;
       0)
@@ -650,6 +824,10 @@ echo -e "${YELLOW}  HQ-RTR: IP 172.16.4.2/28 на ${WAN_INTERFACE}${NC}"
 echo -e "${YELLOW}  BR-RTR: IP 172.16.5.2/28 на ${WAN_INTERFACE}${NC}"
 echo ""
 echo -e "${CYAN}Для настройки IP используйте main.sh${NC}"
+echo ""
+echo -e "${RED}При ошибке 'sendmsg: Invalid argument':${NC}"
+echo -e "${RED}  Используйте пункт 10 для исправления${NC}"
+echo -e "${RED}  или пункт 6 для быстрой диагностики${NC}"
 echo -e "${BGREEN}========================================${NC}"
 echo ""
 main_menu
