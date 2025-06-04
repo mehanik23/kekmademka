@@ -5,6 +5,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BGREEN='\033[1;32m'
 NC='\033[0m'
 
 # Функции для вывода
@@ -21,14 +23,18 @@ fi
 # Глобальная переменная для роли устройства
 DEVICE_ROLE=""
 
+# Сетевые интерфейсы
+WAN_INTERFACE="ens3"  # Внешний интерфейс (к ISP)
+LAN_INTERFACE="ens4"  # Внутренний интерфейс (локальная сеть)
+
 # Выбор роли устройства
 select_device_role() {
-  echo -e "${BLUE}========================================${NC}"
-  echo -e "${BLUE}      Выберите устройство для настройки${NC}"
-  echo -e "${BLUE}========================================${NC}"
-  echo "1. HQ-RTR (Главный офис)"
-  echo "2. BR-RTR (Филиал)"
-  echo -e "${BLUE}========================================${NC}"
+  echo -e "${BGREEN}========================================${NC}"
+  echo -e "${BGREEN}      Выберите устройство для настройки${NC}"
+  echo -e "${BGREEN}========================================${NC}"
+  echo -e "${GREEN}1.${NC} HQ-RTR (Главный офис)"
+  echo -e "${GREEN}2.${NC} BR-RTR (Филиал)"
+  echo -e "${BGREEN}========================================${NC}"
   
   while true; do
     read -p "Выберите устройство (1-2): " choice
@@ -125,7 +131,7 @@ install_frr() {
 configure_ospf_hq() {
   log "Настройка OSPF на HQ-RTR..."
   
-  cat > /etc/frr/frr.conf << 'EOF'
+  cat > /etc/frr/frr.conf << "EOF"
 frr version 8.1
 frr defaults traditional
 hostname HQ-RTR
@@ -134,7 +140,7 @@ router ospf
  ospf router-id 1.1.1.1
  network 192.168.100.0/24 area 0
  network 10.0.0.0/30 area 0
- passive-interface eth1
+ passive-interface ${LAN_INTERFACE}
 !
 interface gre0
  ip ospf cost 10
@@ -142,6 +148,9 @@ interface gre0
 line vty
 !
 EOF
+  
+  # Подставляем реальное имя интерфейса
+  sed -i "s/\${LAN_INTERFACE}/$LAN_INTERFACE/" /etc/frr/frr.conf
 
   systemctl restart frr
   log "OSPF настроен на HQ-RTR"
@@ -151,7 +160,7 @@ EOF
 configure_ospf_br() {
   log "Настройка OSPF на BR-RTR..."
   
-  cat > /etc/frr/frr.conf << 'EOF'
+  cat > /etc/frr/frr.conf << "EOF"
 frr version 8.1
 frr defaults traditional
 hostname BR-RTR
@@ -160,7 +169,7 @@ router ospf
  ospf router-id 2.2.2.2
  network 192.168.200.0/24 area 0
  network 10.0.0.0/30 area 0
- passive-interface eth1
+ passive-interface ${LAN_INTERFACE}
 !
 interface gre0
  ip ospf cost 10
@@ -168,6 +177,9 @@ interface gre0
 line vty
 !
 EOF
+  
+  # Подставляем реальное имя интерфейса
+  sed -i "s/\${LAN_INTERFACE}/$LAN_INTERFACE/" /etc/frr/frr.conf
 
   systemctl restart frr
   log "OSPF настроен на BR-RTR"
@@ -209,14 +221,14 @@ configure_iptables_hq() {
   iptables -A INPUT -p ospf -j ACCEPT
   
   # Разрешение трафика между локальной сетью и туннелем
-  iptables -A FORWARD -i eth1 -o gre0 -j ACCEPT
-  iptables -A FORWARD -i gre0 -o eth1 -j ACCEPT
+  iptables -A FORWARD -i $LAN_INTERFACE -o gre0 -j ACCEPT
+  iptables -A FORWARD -i gre0 -o $LAN_INTERFACE -j ACCEPT
   
   # Разрешение трафика из локальной сети в интернет
-  iptables -A FORWARD -i eth1 -o eth0 -j ACCEPT
+  iptables -A FORWARD -i $LAN_INTERFACE -o $WAN_INTERFACE -j ACCEPT
   
   # NAT для доступа в интернет
-  iptables -t nat -A POSTROUTING -o eth0 -s 192.168.100.0/24 -j MASQUERADE
+  iptables -t nat -A POSTROUTING -o $WAN_INTERFACE -s 192.168.100.0/24 -j MASQUERADE
   
   # Установка iptables-persistent для сохранения правил
   DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
@@ -262,14 +274,14 @@ configure_iptables_br() {
   iptables -A INPUT -p ospf -j ACCEPT
   
   # Разрешение трафика между локальной сетью и туннелем
-  iptables -A FORWARD -i eth1 -o gre0 -j ACCEPT
-  iptables -A FORWARD -i gre0 -o eth1 -j ACCEPT
+  iptables -A FORWARD -i $LAN_INTERFACE -o gre0 -j ACCEPT
+  iptables -A FORWARD -i gre0 -o $LAN_INTERFACE -j ACCEPT
   
   # Разрешение трафика из локальной сети в интернет
-  iptables -A FORWARD -i eth1 -o eth0 -j ACCEPT
+  iptables -A FORWARD -i $LAN_INTERFACE -o $WAN_INTERFACE -j ACCEPT
   
   # NAT для доступа в интернет
-  iptables -t nat -A POSTROUTING -o eth0 -s 192.168.200.0/24 -j MASQUERADE
+  iptables -t nat -A POSTROUTING -o $WAN_INTERFACE -s 192.168.200.0/24 -j MASQUERADE
   
   # Установка iptables-persistent для сохранения правил
   DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
@@ -287,8 +299,8 @@ check_interfaces() {
   ip -br addr show
   echo ""
   log "Проверьте соответствие:"
-  echo "  - eth0 должен иметь IP из сети ISP (172.16.x.x)"
-  echo "  - eth1 должен иметь IP из локальной сети (192.168.x.x)"
+  echo "  - ${WAN_INTERFACE} должен иметь IP из сети ISP (172.16.x.x)"
+  echo "  - ${LAN_INTERFACE} должен иметь IP из локальной сети (192.168.x.x)"
   echo ""
 }
 
@@ -336,20 +348,20 @@ main_menu() {
   
   while true; do
     clear
-    echo "=========================================="
-    echo "   Настройка GRE и OSPF для $DEVICE_ROLE"
-    echo "=========================================="
-    echo "1. Полная настройка (GRE + OSPF + Firewall)"
-    echo "2. Настроить только GRE туннель"
-    echo "3. Настроить только OSPF"
-    echo "4. Настроить только Firewall"
-    echo "5. Проверить GRE туннель"
-    echo "6. Проверить OSPF"
-    echo "7. Показать текущие маршруты"
-    echo "8. Показать сетевые интерфейсы"
-    echo "9. Сменить устройство"
-    echo "0. Выход"
-    echo "=========================================="
+    echo -e "${BGREEN}=========================================${NC}"
+    echo -e "${BGREEN}   Настройка GRE и OSPF для $DEVICE_ROLE${NC}"
+    echo -e "${BGREEN}=========================================${NC}"
+    echo -e "${GREEN}1.${NC} Полная настройка (GRE + OSPF + Firewall)"
+    echo -e "${GREEN}2.${NC} Настроить только GRE туннель"
+    echo -e "${GREEN}3.${NC} Настроить только OSPF"
+    echo -e "${GREEN}4.${NC} Настроить только Firewall"
+    echo -e "${GREEN}5.${NC} Проверить GRE туннель"
+    echo -e "${GREEN}6.${NC} Проверить OSPF"
+    echo -e "${GREEN}7.${NC} Показать текущие маршруты"
+    echo -e "${GREEN}8.${NC} Показать сетевые интерфейсы"
+    echo -e "${GREEN}9.${NC} Сменить устройство"
+    echo -e "${GREEN}0.${NC} Выход"
+    echo -e "${BGREEN}=========================================${NC}"
     
     read -p "Выберите пункт меню: " choice
     
@@ -418,12 +430,12 @@ main_menu() {
 }
 
 # Запуск меню
-echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}   Скрипт настройки GRE туннеля и OSPF${NC}"
-echo -e "${BLUE}========================================${NC}"
+echo -e "${BGREEN}========================================${NC}"
+echo -e "${BGREEN}   Скрипт настройки GRE туннеля и OSPF${NC}"
+echo -e "${BGREEN}========================================${NC}"
 echo -e "${YELLOW}ВАЖНО: Убедитесь, что интерфейсы настроены:${NC}"
-echo -e "${YELLOW}  eth0 - внешний интерфейс (к ISP)${NC}"
-echo -e "${YELLOW}  eth1 - внутренний интерфейс (локальная сеть)${NC}"
-echo -e "${BLUE}========================================${NC}"
+echo -e "${YELLOW}  ${WAN_INTERFACE} - внешний интерфейс (к ISP)${NC}"
+echo -e "${YELLOW}  ${LAN_INTERFACE} - внутренний интерфейс (локальная сеть)${NC}"
+echo -e "${BGREEN}========================================${NC}"
 echo ""
 main_menu
