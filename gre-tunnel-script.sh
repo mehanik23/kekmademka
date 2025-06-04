@@ -60,56 +60,132 @@ select_device_role() {
 configure_gre_hq() {
   log "Настройка GRE туннеля на HQ-RTR..."
   
+  # Проверка внешних IP адресов
+  if ! check_and_setup_external_ips; then
+    return 1
+  fi
+  
+  # Получение локального IP адреса
+  local local_ip=$(ip addr show $WAN_INTERFACE | grep -oP '(?<=inet\s)\d+\.\d+\.\d+\.\d+')
+  
+  if [[ -z "$local_ip" ]]; then
+    error "Не удалось определить локальный IP адрес"
+    return 1
+  fi
+  
+  log "Используется локальный IP: $local_ip"
+  
   # Включение IP forwarding
   echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-forwarding.conf
   sysctl -p /etc/sysctl.d/99-forwarding.conf
   
-  # Создание GRE туннеля
-  cat > /etc/network/interfaces.d/gre0 << 'EOF'
-# GRE Tunnel HQ-RTR to BR-RTR
-auto gre0
-iface gre0 inet static
-    address 10.0.0.1
-    netmask 255.255.255.252
-    pre-up ip tunnel add gre0 mode gre remote 172.16.5.2 local 172.16.4.2 ttl 255
-    up ip link set gre0 up
-    up ip route add 192.168.200.0/24 via 10.0.0.2
-    post-down ip tunnel del gre0
+  # Загрузка модуля GRE
+  modprobe ip_gre
+  echo "ip_gre" >> /etc/modules-load.d/gre.conf
+  
+  # Создание GRE туннеля через systemd-networkd
+  cat > /etc/systemd/network/25-gre0.netdev << EOF
+[NetDev]
+Name=gre0
+Kind=gre
+
+[Tunnel]
+Local=$local_ip
+Remote=172.16.5.2
+TTL=255
+EOF
+
+  cat > /etc/systemd/network/25-gre0.network << 'EOF'
+[Match]
+Name=gre0
+
+[Network]
+Address=10.0.0.1/30
+
+[Route]
+Destination=192.168.200.0/24
+Gateway=10.0.0.2
 EOF
   
-  log "Перезапуск сетевых интерфейсов..."
-  ifdown gre0 2>/dev/null
-  ifup gre0
+  # Перезапуск systemd-networkd
+  systemctl restart systemd-networkd
   
-  log "GRE туннель настроен: 10.0.0.1/30"
+  # Ожидание поднятия интерфейса
+  sleep 3
+  
+  # Проверка статуса
+  if ip link show gre0 &>/dev/null; then
+    log "GRE туннель создан успешно"
+    ip addr show gre0
+  else
+    error "Ошибка создания GRE туннеля"
+  fi
 }
 
 # Настройка GRE туннеля для BR-RTR
 configure_gre_br() {
   log "Настройка GRE туннеля на BR-RTR..."
   
+  # Проверка внешних IP адресов
+  if ! check_and_setup_external_ips; then
+    return 1
+  fi
+  
+  # Получение локального IP адреса
+  local local_ip=$(ip addr show $WAN_INTERFACE | grep -oP '(?<=inet\s)\d+\.\d+\.\d+\.\d+')
+  
+  if [[ -z "$local_ip" ]]; then
+    error "Не удалось определить локальный IP адрес"
+    return 1
+  fi
+  
+  log "Используется локальный IP: $local_ip"
+  
   # Включение IP forwarding
   echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-forwarding.conf
   sysctl -p /etc/sysctl.d/99-forwarding.conf
   
-  # Создание GRE туннеля
-  cat > /etc/network/interfaces.d/gre0 << 'EOF'
-# GRE Tunnel BR-RTR to HQ-RTR
-auto gre0
-iface gre0 inet static
-    address 10.0.0.2
-    netmask 255.255.255.252
-    pre-up ip tunnel add gre0 mode gre remote 172.16.4.2 local 172.16.5.2 ttl 255
-    up ip link set gre0 up
-    up ip route add 192.168.100.0/24 via 10.0.0.1
-    post-down ip tunnel del gre0
+  # Загрузка модуля GRE
+  modprobe ip_gre
+  echo "ip_gre" >> /etc/modules-load.d/gre.conf
+  
+  # Создание GRE туннеля через systemd-networkd
+  cat > /etc/systemd/network/25-gre0.netdev << EOF
+[NetDev]
+Name=gre0
+Kind=gre
+
+[Tunnel]
+Local=$local_ip
+Remote=172.16.4.2
+TTL=255
+EOF
+
+  cat > /etc/systemd/network/25-gre0.network << 'EOF'
+[Match]
+Name=gre0
+
+[Network]
+Address=10.0.0.2/30
+
+[Route]
+Destination=192.168.100.0/24
+Gateway=10.0.0.1
 EOF
   
-  log "Перезапуск сетевых интерфейсов..."
-  ifdown gre0 2>/dev/null
-  ifup gre0
+  # Перезапуск systemd-networkd
+  systemctl restart systemd-networkd
   
-  log "GRE туннель настроен: 10.0.0.2/30"
+  # Ожидание поднятия интерфейса
+  sleep 3
+  
+  # Проверка статуса
+  if ip link show gre0 &>/dev/null; then
+    log "GRE туннель создан успешно"
+    ip addr show gre0
+  else
+    error "Ошибка создания GRE туннеля"
+  fi
 }
 
 # Установка FRR (Free Range Routing) для OSPF
@@ -292,6 +368,63 @@ configure_iptables_br() {
   log "Правила iptables настроены"
 }
 
+# Удаление GRE туннеля
+remove_gre_tunnel() {
+  log "Удаление GRE туннеля..."
+  
+  # Удаление файлов конфигурации
+  rm -f /etc/systemd/network/25-gre0.netdev
+  rm -f /etc/systemd/network/25-gre0.network
+  
+  # Перезапуск systemd-networkd
+  systemctl restart systemd-networkd
+  
+  log "GRE туннель удален"
+}
+
+# Проверка и настройка внешних IP адресов
+check_and_setup_external_ips() {
+  log "Проверка внешних IP адресов..."
+  
+  # Проверка IP на внешнем интерфейсе
+  local current_ip=$(ip addr show $WAN_INTERFACE 2>/dev/null | grep -oP '(?<=inet\s)\d+\.\d+\.\d+\.\d+')
+  
+  if [[ -z "$current_ip" ]]; then
+    error "IP адрес не настроен на интерфейсе $WAN_INTERFACE"
+    echo "Для настройки GRE туннеля необходимо сначала настроить IP адреса на интерфейсах."
+    echo ""
+    
+    if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
+      echo "Для HQ-RTR необходимо настроить:"
+      echo "  - IP адрес 172.16.4.2/28 на интерфейсе $WAN_INTERFACE"
+      echo "  - IP адрес 192.168.100.1/24 на интерфейсе $LAN_INTERFACE"
+    else
+      echo "Для BR-RTR необходимо настроить:"
+      echo "  - IP адрес 172.16.5.2/28 на интерфейсе $WAN_INTERFACE"
+      echo "  - IP адрес 192.168.200.1/24 на интерфейсе $LAN_INTERFACE"
+    fi
+    
+    echo ""
+    echo "Используйте основной скрипт настройки сети (main.sh) для настройки IP адресов."
+    return 1
+  fi
+  
+  # Проверка соответствия IP адреса
+  if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
+    if [[ "$current_ip" != "172.16.4.2" ]]; then
+      warn "Текущий IP адрес ($current_ip) не соответствует ожидаемому (172.16.4.2)"
+      echo "Для корректной работы GRE туннеля рекомендуется использовать IP 172.16.4.2"
+    fi
+  else
+    if [[ "$current_ip" != "172.16.5.2" ]]; then
+      warn "Текущий IP адрес ($current_ip) не соответствует ожидаемому (172.16.5.2)"
+      echo "Для корректной работы GRE туннеля рекомендуется использовать IP 172.16.5.2"
+    fi
+  fi
+  
+  return 0
+}
+
 # Проверка сетевых интерфейсов
 check_interfaces() {
   log "Текущие сетевые интерфейсы:"
@@ -308,18 +441,56 @@ check_interfaces() {
 check_gre_tunnel() {
   log "Проверка GRE туннеля..."
   
+  # Проверка наличия интерфейса
   if ip link show gre0 &> /dev/null; then
     log "GRE туннель создан"
+    echo ""
+    echo "Информация об интерфейсе gre0:"
     ip addr show gre0
+    echo ""
+    
+    # Проверка состояния интерфейса
+    local state=$(ip link show gre0 | grep -oP '(?<=state\s)\w+')
+    if [[ "$state" == "UP" ]]; then
+      log "Интерфейс gre0 активен (UP)"
+    else
+      warn "Интерфейс gre0 не активен (состояние: $state)"
+    fi
+    
+    # Проверка назначенного IP
+    local gre_ip=$(ip addr show gre0 | grep -oP '(?<=inet\s)\d+\.\d+\.\d+\.\d+/\d+')
+    if [[ -n "$gre_ip" ]]; then
+      log "IP адрес gre0: $gre_ip"
+    else
+      error "IP адрес не назначен на gre0"
+    fi
     
     # Проверка связности
+    echo ""
+    log "Проверка связности через туннель..."
     if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
-      ping -c 3 10.0.0.2
+      echo "Ping 10.0.0.2 (BR-RTR):"
+      ping -c 3 -W 2 10.0.0.2
     else
-      ping -c 3 10.0.0.1
+      echo "Ping 10.0.0.1 (HQ-RTR):"
+      ping -c 3 -W 2 10.0.0.1
     fi
+    
+    # Показать файлы конфигурации
+    echo ""
+    log "Файлы конфигурации systemd-networkd:"
+    ls -la /etc/systemd/network/25-gre0.*
+    
   else
     error "GRE туннель не найден!"
+    echo ""
+    echo "Возможные причины:"
+    echo "1. Туннель не был настроен"
+    echo "2. systemd-networkd не запущен"
+    echo "3. Проблемы с конфигурацией"
+    echo ""
+    echo "Проверьте статус systemd-networkd:"
+    systemctl status systemd-networkd --no-pager | head -n 10
   fi
 }
 
@@ -334,6 +505,31 @@ check_ospf() {
   else
     error "FRR не запущен!"
   fi
+}
+
+# Отладка systemd-networkd
+debug_networkd() {
+  log "Отладка systemd-networkd..."
+  echo ""
+  
+  # Статус службы
+  echo "=== Статус systemd-networkd ==="
+  systemctl status systemd-networkd --no-pager | head -n 15
+  echo ""
+  
+  # Логи службы
+  echo "=== Последние логи systemd-networkd ==="
+  journalctl -u systemd-networkd -n 20 --no-pager
+  echo ""
+  
+  # Файлы конфигурации
+  echo "=== Файлы конфигурации в /etc/systemd/network/ ==="
+  ls -la /etc/systemd/network/
+  echo ""
+  
+  # Состояние сетевых интерфейсов
+  echo "=== Состояние сетевых интерфейсов ==="
+  networkctl status --no-pager
 }
 
 # Главное меню
@@ -359,7 +555,9 @@ main_menu() {
     echo -e "${GREEN}6.${NC} Проверить OSPF"
     echo -e "${GREEN}7.${NC} Показать текущие маршруты"
     echo -e "${GREEN}8.${NC} Показать сетевые интерфейсы"
-    echo -e "${GREEN}9.${NC} Сменить устройство"
+    echo -e "${GREEN}9.${NC} Удалить GRE туннель"
+    echo -e "${GREEN}10.${NC} Отладка systemd-networkd"
+    echo -e "${GREEN}11.${NC} Сменить устройство"
     echo -e "${GREEN}0.${NC} Выход"
     echo -e "${BGREEN}=========================================${NC}"
     
@@ -369,14 +567,18 @@ main_menu() {
       1)
         if [ "$DEVICE_ROLE" = "HQ-RTR" ]; then
           configure_gre_hq
-          install_frr
-          configure_ospf_hq
-          configure_iptables_hq
+          if [ $? -eq 0 ]; then
+            install_frr
+            configure_ospf_hq
+            configure_iptables_hq
+          fi
         else
           configure_gre_br
-          install_frr
-          configure_ospf_br
-          configure_iptables_br
+          if [ $? -eq 0 ]; then
+            install_frr
+            configure_ospf_br
+            configure_iptables_br
+          fi
         fi
         ;;
       2)
@@ -414,6 +616,12 @@ main_menu() {
         ip addr show
         ;;
       9)
+        remove_gre_tunnel
+        ;;
+      10)
+        debug_networkd
+        ;;
+      11)
         select_device_role
         ;;
       0)
@@ -436,6 +644,12 @@ echo -e "${BGREEN}========================================${NC}"
 echo -e "${YELLOW}ВАЖНО: Убедитесь, что интерфейсы настроены:${NC}"
 echo -e "${YELLOW}  ${WAN_INTERFACE} - внешний интерфейс (к ISP)${NC}"
 echo -e "${YELLOW}  ${LAN_INTERFACE} - внутренний интерфейс (локальная сеть)${NC}"
+echo ""
+echo -e "${YELLOW}Требования для настройки GRE:${NC}"
+echo -e "${YELLOW}  HQ-RTR: IP 172.16.4.2/28 на ${WAN_INTERFACE}${NC}"
+echo -e "${YELLOW}  BR-RTR: IP 172.16.5.2/28 на ${WAN_INTERFACE}${NC}"
+echo ""
+echo -e "${CYAN}Для настройки IP используйте main.sh${NC}"
 echo -e "${BGREEN}========================================${NC}"
 echo ""
 main_menu
